@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 DESTINATION_FOLDER = "/Game/GeneratedBlueprints"
 WINDOW_WIDTH = 450
-WINDOW_HEIGHT = 700
+WINDOW_HEIGHT = 450
 
 # Ensure folder exists
 if not unreal.EditorAssetLibrary.does_directory_exist(DESTINATION_FOLDER):
@@ -51,17 +51,17 @@ class BatchBlueprintCreator(QWidget):
 
         self.setStyleSheet("""
             QWidget {
-                background: #f0f1f2;
+                background: #e7ecef;
                 font-family: "Courier New", monospace;
                 font-size: 13px;
             }
             #Header {
-                background: #6ea6e6;
-                color: #0b2540;
+                background-color: #6096ba;
+                border: none;
                 border-bottom: 2px solid #0b2540;
             }
             QLabel.title {
-                font-size: 24px;
+                font-size: 30px;
                 font-weight: 900;
             }
             QLabel.option {
@@ -75,9 +75,21 @@ class BatchBlueprintCreator(QWidget):
                 border-radius: 8px;
             }
             QPushButton.generate:pressed {
-                background: #08304a;
+                background: #6096ba;
             }
             QGroupBox { border: none; }
+            
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 2px solid #0b2540;
+                border-radius: 3px;
+                background: white;
+            }
+            QCheckBox::indicator:checked {
+                background: #6096ba;
+                border: 2px solid #0b2540;
+            }
         """)
 
         main_layout = QVBoxLayout(self)
