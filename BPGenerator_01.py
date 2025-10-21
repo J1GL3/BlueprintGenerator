@@ -120,3 +120,81 @@ def launchWindow():
 
 launchWindow()
   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def ListMenu(num = 1000):
+    menuList = set()
+
+    for i in range (num):
+        #try to find unreal objects at a specific "path" in memory
+        object = unreal.find_object(None, "/Engine/Transient.ToolMenu_0:RegisteredMenu_%s" % i)
+
+        if not obj:
+            #legacy path used fpr tje transent tool menu objects <-- only adding this for backards compatibility
+            obj = unreal.find_object(None, f"/Engine/Transient.ToolsMenu_0:ToolMenu_{i}")
+            if not obj:
+                continue
+        menuName = str(obj.menu_name)
+        if menuName == "None":
+            continue
+
+        menuList.add(menuName)
+        print(menuList)
+
+#ListMenu()
+
+tool_menus = unreal.ToolMenus.get()
+
+def createNewMainMenu():
+    mainMenu = tool_menus.find_menu("LevelEditor.MainMenu")
+    #New Menu -> Section Name
+    #Python Tool -> ID, Key used in the code internally
+    #Menu Name -> Name of menu used for identification
+    #Menu Label -> What we see in the UI
+    newMenu = mainMenu.add_sub_menu("New Menu", "Python Tool", "Menu Name", "Menu Label")
+    tool_menus.refresh_all_widgets()
+
+#createNewMainMenu()
+
+@unreal.uclass()
+class MyEditActionScript(unreal.ToolMenuEntryScript):
+    @unreal.ufunction(override=True)
+    def execute(self, context):
+        print ("M Edit Action Executed")
+
+
+def createEditAction():
+    editMenu = tool_menus.find_menu("LevelEditor.MainMenu.Edit")
+    #we need to create a scriptable object
+    MyEditAcionScriptObject = MyEditActionScript()
+    MyEditAcionScriptObject.init_entry(
+        owner_name=editMenu.menu_name,
+        menu = editMenu.menu_name,
+        section="EditMain",
+        name = "MyEditCustomName",
+        label = "My Edit Action",
+        tool_tips= "this is my Edit Acion!"
+
+    )
+
+    MyEditAcionScriptObject.register_menu_entry()
+    tool_menus.refresh_all_widgets
+
+createEditAction()

@@ -71,8 +71,8 @@ class BatchBlueprintCreator(QWidget):
                 font-size: 13px;
             }
             #Header {
-                background: #6096ba;
-                color: #6096ba;
+                background-color: #6096ba;
+                border: none;
                 border-bottom: 2px solid #0b2540;
             }
             QLabel.title {
@@ -93,5 +93,17 @@ class BatchBlueprintCreator(QWidget):
                 background: #6096ba;
             }
             QGroupBox { border: none; }
+            
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 2px solid #0b2540;
+                border-radius: 3px;
+                background: white;
+            }
+            QCheckBox::indicator:checked {
+                background: #6096ba;
+                border: 2px solid #0b2540;
+            }
         """)
         

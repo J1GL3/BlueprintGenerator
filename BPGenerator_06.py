@@ -78,7 +78,6 @@ class BatchBlueprintCreator(QWidget):
                 background: #6096ba;
             }
             QGroupBox { border: none; }
-            
             QCheckBox::indicator {
                 width: 16px;
                 height: 16px;
@@ -94,7 +93,7 @@ class BatchBlueprintCreator(QWidget):
 
         main_layout = QVBoxLayout(self)
 
-        # Creating the header ------------------------------------------
+        # Header
         header = QFrame()
         header.setObjectName("Header")
         header.setFixedHeight(100)
@@ -105,22 +104,22 @@ class BatchBlueprintCreator(QWidget):
         header_layout.addWidget(title)
         main_layout.addWidget(header)
 
-        # Setting the layout and spacing of the UI ---------------------   
+        # Content layout
         content = QVBoxLayout()
         content.setContentsMargins(24, 16, 24, 16)
         content.setSpacing(12)
 
-        # Creating the gravity button and saving for later use ---------
+        # Gravity
         self.gravity_cb = self._add_option(content, "Enable Gravity")
 
-        # ---- Collision Settings ----
+        # Collision Settings
         collision_box = CollapsibleBox("Collision settings")
         inner = QVBoxLayout()
         inner.setSpacing(6)
         self.simple_collision_cb = self._add_option(inner, "Simple or Complex as Simple", inside=True)
         self.gen_overlap_cb = self._add_option(inner, "Generate overlap events", inside=True)
 
-        # --- Collision Preset Dropdown ---
+        # Collision Preset Dropdown
         row = QHBoxLayout()
         label = QLabel("Collision preset")
         label.setProperty("class", "option")
@@ -142,17 +141,16 @@ class BatchBlueprintCreator(QWidget):
         row.addWidget(self.collision_combo)
         row.setContentsMargins(20, 0, 0, 0)
         inner.addLayout(row)
-
         collision_box.content.setLayout(inner)
         content.addWidget(collision_box)
 
-        # ---- CCD ----
+        # CCD
         self.ccd_cb = self._add_option(content, "Continuous Collision Detection (CCD)")
 
         # Spacer
         content.addItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        # Info + Generate button
+        # Info + Generate
         self.info_label = QLabel("Selected assets: 0")
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.info_label)
@@ -165,17 +163,15 @@ class BatchBlueprintCreator(QWidget):
         content.addLayout(btn_row)
         main_layout.addLayout(content)
 
-        # Live update timer for selected assets
+        # Live selection count
         self._last_asset_count = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_selected_count)
-        self.timer.start(500)  # every 0.5 seconds
+        self.timer.start(500)
 
-        # Ensure checkboxes start functional
         for cb in [self.gravity_cb, self.simple_collision_cb, self.gen_overlap_cb, self.ccd_cb]:
             cb.setCheckState(Qt.Unchecked)
 
-    # ------------- Helper for labeled checkbox rows ------------- #
     def _add_option(self, parent_layout, text, inside=False):
         row = QHBoxLayout()
         label = QLabel(text)
@@ -189,7 +185,6 @@ class BatchBlueprintCreator(QWidget):
         parent_layout.addLayout(row)
         return checkbox
 
-    # ------------- Update asset count dynamically ------------- #
     def update_selected_count(self):
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
         count = len(assets)
@@ -197,96 +192,92 @@ class BatchBlueprintCreator(QWidget):
             self._last_asset_count = count
             self.info_label.setText(f"Selected assets: {count}")
 
-    # ------------- Main generation logic ------------- #
-    # ------------- Main generation logic ------------- #
+    # ------------ FIXED MAIN GENERATION ------------ #
     def on_generate(self):
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
-        self.update_selected_count()
         if not assets:
-            unreal.log_warning("No assets selected.")
+            unreal.log_warning("⚠️ No assets selected.")
             return
 
-        unreal.log(f"Generating blueprints for {len(assets)} assets...")
+        unreal.log(f"🛠 Generating blueprints for {len(assets)} assets...")
         tools = unreal.AssetToolsHelpers.get_asset_tools()
+        editor_subsystem = unreal.get_editor_subsystem(unreal.AssetEditorSubsystem)
 
         for asset in assets:
             try:
+                if not isinstance(asset, unreal.StaticMesh):
+                    unreal.log_warning(f"Skipping {asset.get_name()} (not a StaticMesh).")
+                    continue
+
                 bp_name = f"{asset.get_name()}_BP"
                 unique_name = tools.create_unique_asset_name(f"{DESTINATION_FOLDER}/{bp_name}", "")
                 bp_name = unique_name[1] if isinstance(unique_name, (list, tuple)) else unique_name
 
+                # ✅ Create the Actor Blueprint
                 factory = unreal.BlueprintFactory()
                 factory.set_editor_property("ParentClass", unreal.Actor)
                 bp = tools.create_asset(bp_name, DESTINATION_FOLDER, unreal.Blueprint, factory)
                 if not bp:
-                    unreal.log_warning(f"Failed to create blueprint for {asset.get_name()}")
+                    unreal.log_warning(f"❌ Failed to create blueprint for {asset.get_name()}")
                     continue
 
-                # --- Add the appropriate mesh component ---
-                scs = bp.simple_construction_script
-                node = None
-                component_template = None
+                # ✅ Get BlueprintGeneratedClass using the asset itself
+                bp_generated_class = bp.GeneratedClass if hasattr(bp, "GeneratedClass") else None
+                if not bp_generated_class:
+                    unreal.log_warning(f"❌ Could not retrieve GeneratedClass for {bp.get_name()}")
+                    continue
 
-                if isinstance(asset, unreal.StaticMesh):
-                    node = scs.add_node(unreal.StaticMeshComponent)
-                    component_template = node.get_editor_property("component_template")
-                    component_template.set_editor_property("static_mesh", asset)
-                    unreal.log(f"📦 Added StaticMeshComponent for {asset.get_name()}")
+                # ✅ Get Class Default Object (CDO)
+                cdo = bp_generated_class.get_default_object()
+                if not cdo:
+                    unreal.log_warning(f"❌ Could not get CDO for {bp.get_name()}")
+                    continue
 
-                elif isinstance(asset, unreal.SkeletalMesh):
-                    node = scs.add_node(unreal.SkeletalMeshComponent)
-                    component_template = node.get_editor_property("component_template")
-                    component_template.set_editor_property("skeletal_mesh", asset)
-                    unreal.log(f"🦴 Added SkeletalMeshComponent for {asset.get_name()}")
+                # ✅ Create StaticMeshComponent as subobject
+                mesh_comp = unreal.StaticMeshComponent(cdo)
+                mesh_comp.set_editor_property("static_mesh", asset)
+                mesh_comp.set_editor_property("mobility", unreal.ComponentMobility.MOVABLE)
 
-                else:
-                    node = scs.add_node(unreal.SceneComponent)
-                    component_template = node.get_editor_property("component_template")
-                    unreal.log(f"🧩 Added generic SceneComponent for {asset.get_name()}")
+                # ✅ Attach as root (if no root yet)
+                cdo.set_root_component(mesh_comp)
+                cdo.add_instance_component(mesh_comp)
 
-                # --- Make the mesh the root node ---
-                if node:
-                    scs.set_root_node(node)
-                    bp.generated_class.get_default_object().set_editor_property("root_component", component_template)
+                # ✅ Apply collision/gravity settings
+                if hasattr(mesh_comp, "enable_gravity"):
+                    mesh_comp.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
 
-                # --- Apply UI checkbox settings ---
-                if hasattr(component_template, "enable_gravity"):
-                    component_template.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
+                if hasattr(mesh_comp, "generate_overlap_events"):
+                    mesh_comp.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
 
-                if hasattr(component_template, "generate_overlap_events"):
-                    component_template.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
+                if hasattr(mesh_comp, "use_continuous_collision_detection"):
+                    mesh_comp.set_editor_property(
+                        "use_continuous_collision_detection", self.ccd_cb.isChecked()
+                    )
 
-                if hasattr(component_template, "use_continuous_collision_detection"):
-                    component_template.set_editor_property("use_continuous_collision_detection", self.ccd_cb.isChecked())
-
-                if hasattr(component_template, "collision_complexity"):
-                    if self.simple_collision_cb.isChecked():
-                        component_template.set_editor_property(
-                            "collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX
-                        )
-                    else:
-                        component_template.set_editor_property(
-                            "collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT
-                        )
+                if hasattr(mesh_comp, "collision_complexity"):
+                    mesh_comp.set_editor_property(
+                        "collision_complexity",
+                        unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX
+                        if self.simple_collision_cb.isChecked()
+                        else unreal.CollisionTraceFlag.CTF_USE_DEFAULT
+                    )
 
                 preset = self.collision_combo.currentText()
-                if hasattr(component_template, "collision_profile_name"):
-                    component_template.set_editor_property("collision_profile_name", unreal.Name(preset))
+                if hasattr(mesh_comp, "collision_profile_name"):
+                    mesh_comp.set_editor_property("collision_profile_name", unreal.Name(preset))
 
-                # --- Force Unreal to update and save ---
-                unreal.KismetEditorUtilities.compile_blueprint(bp)
-                unreal.BlueprintEditorLibrary.refresh_all_nodes(bp)
-
-                # 💡 Important: refresh default object to persist mesh assignment
-                bp.generated_class.get_default_object().rerun_construction_scripts()
-
-                bp.mark_package_dirty()
+                # ✅ Save and open the asset
                 unreal.EditorAssetLibrary.save_loaded_asset(bp)
+                editor_subsystem.open_editor_for_assets([bp])
 
-                unreal.log(f"✅ Created '{bp.get_name()}' with mesh '{asset.get_name()}' applied and visible.")
+                unreal.log(f"✅ Created '{bp.get_name()}' with StaticMesh '{asset.get_name()}' successfully applied.")
 
             except Exception as e:
-                unreal.log_warning(f"Error creating BP for {asset.get_name()}: {e}")
+                unreal.log_warning(f"⚠️ Error creating BP for {asset.get_name()}: {e}")
+
+
+
+
 
 
 
@@ -320,7 +311,7 @@ def launch_window():
         unreal.log_warning(f"Could not parent to slate: {e}")
 
     _global_window_ref = window
-    unreal.log("✅ Batch Blueprint Creator running (checkboxes & live asset count fixed).")
+    unreal.log("✅ Batch Blueprint Creator running.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,885 @@
+"""
+Unreal Editor Lighting Tool
+--------------------------
+A PySide6-based UI for adjusting common lighting parameters in an Unreal Engine level.
+
+How to use
+1. Enable the Editor Scripting (Python) plugin in Unreal Editor.
+2. Make sure Python in UE has access to PySide6. (Unreal ships with its own Python; you may need to install PySide6 into that Python environment or run this from a system Python that has access to unreal via a plugin.)
+3. Drop this script into the Editor Scripting window or run from the Python console inside UE.
+4. The UI will search the current level for actors of the following types (by class name):
+   - DirectionalLight (used as the sun)
+   - SkyLight
+   - ExponentialHeightFog
+   - SkyAtmosphere or BP_Sky_Sphere (if present)
+
+If an actor is not found the tool will print a warning in the Output Log but will not crash.
+
+Notes and caveats
+- Unreal's Python API can expose slightly different property names depending on engine version & plugins. If a property fails to set, the tool prints a helpful message.
+- This tool is intended as a working reference: adjust actor names/classes to match your project if needed.
+
+"""
+
+from PySide6 import QtWidgets, QtCore, QtGui
+import sys
+
+# Attempt to import unreal - will work when run inside Unreal Editor or when unreal Python package is available
+try:
+    import unreal
+except Exception:
+    unreal = None
+
+# Global reference to track existing UI instances
+_ACTIVE_UI_INSTANCES = []
+
+def cleanup_qt_instances():
+    """Clean up any existing Qt instances before creating new ones"""
+    global _ACTIVE_UI_INSTANCES
+    
+    print("Cleaning up existing Qt instances...")
+    for instance in _ACTIVE_UI_INSTANCES[:]:
+        try:
+            if instance and hasattr(instance, 'close'):
+                instance.close()
+                instance.deleteLater()
+            _ACTIVE_UI_INSTANCES.remove(instance)
+        except Exception as e:
+            print(f"Error cleaning up instance: {e}")
+    
+    # Force garbage collection
+    import gc
+    gc.collect()
+    print("Cleanup completed")
+
+def log(msg):
+    """Unified log that prints to both Python console and Unreal Output Log (if available)."""
+    print(msg)
+    if unreal:
+        try:
+            unreal.log(msg)
+        except Exception:
+            pass
+
+
+class UnrealBridge:
+    """Small helper wrapper to find / update common lighting actors safely.
+
+    Methods are defensive: they will return False on failure and print informative logs.
+    """
+
+    def __init__(self):
+        if unreal is None:
+            log("[UnrealBridge] Warning: 'unreal' module not available. Running in mock mode.")
+        self.level_actors = None
+
+    def refresh_actors(self):
+        if unreal is None:
+            self.level_actors = []
+            return
+        try:
+            self.level_actors = unreal.EditorLevelLibrary.get_all_level_actors()
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to get actors: {e}")
+            self.level_actors = []
+
+    def find_actor_by_class_name(self, class_name):
+        """Return the first actor whose class name matches class_name (string).
+        Case-sensitive match on class.get_name().
+        """
+        if unreal is None:
+            return None
+        self.refresh_actors()
+        for a in self.level_actors:
+            try:
+                if a.get_class().get_name() == class_name:
+                    return a
+            except Exception:
+                continue
+        return None
+
+    def find_actors_by_class_name(self, class_name):
+        if unreal is None:
+            return []
+        self.refresh_actors()
+        out = []
+        for a in self.level_actors:
+            try:
+                if a.get_class().get_name() == class_name:
+                    out.append(a)
+            except Exception:
+                continue
+        return out
+
+    # ----- Directional Light (Sun) -----
+    def set_sun_rotation(self, pitch, yaw, roll=0.0):
+        a = self.find_actor_by_class_name('DirectionalLight')
+        if not a:
+            log('[UnrealBridge] No DirectionalLight actor found to set rotation.')
+            return False
+        try:
+            rot = unreal.Rotator(pitch, yaw, roll)
+            a.set_actor_rotation(rot, False)
+            return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set sun rotation: {e}")
+            return False
+
+    def set_sun_intensity(self, intensity):
+        a = self.find_actor_by_class_name('DirectionalLight')
+        if not a:
+            log('[UnrealBridge] No DirectionalLight actor found to set intensity.')
+            return False
+        try:
+            # Many light properties live on the light component; attempt to find it
+            comp = a.get_component_by_class(unreal.DirectionalLightComponent)
+            if comp:
+                comp.set_editor_property('intensity', float(intensity))
+                return True
+            else:
+                # fallback: try actor-level property
+                a.set_editor_property('intensity', float(intensity))
+                return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set sun intensity: {e}")
+            return False
+
+    def set_sun_color(self, linear_color):
+        """linear_color should be unreal.LinearColor(r,g,b,a) or a tuple/list of floats 0-1."""
+        a = self.find_actor_by_class_name('DirectionalLight')
+        if not a:
+            log('[UnrealBridge] No DirectionalLight actor found to set color.')
+            return False
+        try:
+            comp = a.get_component_by_class(unreal.DirectionalLightComponent)
+            if comp:
+                comp.set_editor_property('light_color', linear_color)
+            else:
+                a.set_editor_property('light_color', linear_color)
+            return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set sun color: {e}")
+            return False
+
+    # ----- Sky light (ambient) -----
+    def set_skylight_intensity(self, intensity):
+        a = self.find_actor_by_class_name('SkyLight')
+        if not a:
+            log('[UnrealBridge] No SkyLight actor found to set intensity.')
+            return False
+        try:
+            comp = a.get_component_by_class(unreal.SkyLightComponent)
+            if comp:
+                comp.set_editor_property('intensity', float(intensity))
+                return True
+            else:
+                a.set_editor_property('intensity', float(intensity))
+                return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set skylight intensity: {e}")
+            return False
+
+    def set_skylight_color(self, linear_color):
+        a = self.find_actor_by_class_name('SkyLight')
+        if not a:
+            log('[UnrealBridge] No SkyLight actor found to set color.')
+            return False
+        try:
+            comp = a.get_component_by_class(unreal.SkyLightComponent)
+            if comp:
+                comp.set_editor_property('light_color', linear_color)
+            else:
+                a.set_editor_property('light_color', linear_color)
+            return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set skylight color: {e}")
+            return False
+
+    # ----- Fog -----
+    def set_fog_density(self, density):
+        a = self.find_actor_by_class_name('ExponentialHeightFog')
+        if not a:
+            log('[UnrealBridge] No ExponentialHeightFog actor found to set density.')
+            return False
+        try:
+            comp = a.get_component_by_class(unreal.ExponentialHeightFogComponent)
+            if comp:
+                comp.set_editor_property('fog_density', float(density))
+                return True
+            else:
+                a.set_editor_property('fog_density', float(density))
+                return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set fog density: {e}")
+            return False
+
+    def set_fog_color(self, linear_color):
+        a = self.find_actor_by_class_name('ExponentialHeightFog')
+        if not a:
+            log('[UnrealBridge] No ExponentialHeightFog actor found to set color.')
+            return False
+        try:
+            comp = a.get_component_by_class(unreal.ExponentialHeightFogComponent)
+            # Property name varies across versions; try a few common ones
+            tried = []
+            if comp:
+                for prop in ('fog_in_scattering_color', 'fog_color'):
+                    try:
+                        comp.set_editor_property(prop, linear_color)
+                        return True
+                    except Exception:
+                        tried.append(prop)
+            # fallback to actor-level
+            for prop in ('fog_in_scattering_color', 'fog_color'):
+                try:
+                    a.set_editor_property(prop, linear_color)
+                    return True
+                except Exception:
+                    tried.append(prop)
+            log(f"[UnrealBridge] Tried properties: {tried} but couldn't set fog color.")
+            return False
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set fog color: {e}")
+            return False
+
+    # ----- Sky / Time of Day -----
+    def set_time_of_day(self, hours_float):
+        """A simple mapping from hours to directional light rotation.
+        12:00 -> overhead (pitch = -90), 0/24 -> midnight (pitch = 90) -- adjust mapping as you prefer.
+        """
+        # Map 0..24 -> -180..180 yaw or change pitch
+        try:
+            # We'll rotate pitch so sun rises in east (-30 -> morning, 90 -> midday, 210 -> evening)
+            # Simpler mapping: pitch = 90 - (hours/24)*360
+            pitch = 90.0 - (hours_float / 24.0) * 360.0
+            yaw = (hours_float / 24.0) * 360.0
+            success = self.set_sun_rotation(pitch, yaw)
+            if not success:
+                log('[UnrealBridge] Could not set sun rotation for time-of-day.')
+                return False
+            return True
+        except Exception as e:
+            log(f"[UnrealBridge] Failed to set time of day: {e}")
+            return False
+
+
+# ----------------------------
+# PySide6 UI
+# ----------------------------
+
+class LightingToolUI(QtWidgets.QWidget):
+    def __init__(self, unreal_bridge=None):
+        super().__init__()
+        
+        # Register this instance for cleanup
+        _ACTIVE_UI_INSTANCES.append(self)
+        
+        self.setWindowTitle('Unreal Lighting Tool v2.0')
+        self.setObjectName("LightingToolUI")  # Unique object name
+        
+        self.bridge = unreal_bridge or UnrealBridge()
+        self.init_ui()
+        self.resize(420, 520)
+
+    def closeEvent(self, event):
+        """Override close event to properly clean up"""
+        try:
+            if self in _ACTIVE_UI_INSTANCES:
+                _ACTIVE_UI_INSTANCES.remove(self)
+        except ValueError:
+            pass
+        event.accept()
+
+    def init_ui(self):
+        layout = QtWidgets.QVBoxLayout()
+
+        # Time of day slider
+        time_box = QtWidgets.QGroupBox('Time of Day')
+        tlay = QtWidgets.QHBoxLayout()
+        self.time_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.time_slider.setRange(0, 2400)  # use 0-2400 to get two decimal precision if desired
+        self.time_slider.setValue(1200)
+        self.time_label = QtWidgets.QLabel('12:00')
+        self.time_slider.valueChanged.connect(self.on_time_changed)
+        tlay.addWidget(self.time_slider)
+        tlay.addWidget(self.time_label)
+        time_box.setLayout(tlay)
+        layout.addWidget(time_box)
+
+        # Sun controls
+        sun_box = QtWidgets.QGroupBox('Sun (Directional Light)')
+        sgrid = QtWidgets.QFormLayout()
+        self.sun_intensity = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.sun_intensity.setRange(0, 100000)  # UE intensity units can be large; scale as needed
+        self.sun_intensity.setValue(10_000)
+        self.sun_intensity.valueChanged.connect(self.on_sun_intensity_changed)
+        sgrid.addRow('Intensity', self.sun_intensity)
+
+        self.sun_color_btn = QtWidgets.QPushButton('Pick Sun Color')
+        self.sun_color_btn.clicked.connect(self.on_pick_sun_color)
+        sgrid.addRow('Color', self.sun_color_btn)
+
+        sun_box.setLayout(sgrid)
+        layout.addWidget(sun_box)
+
+        # Skylight controls
+        sky_box = QtWidgets.QGroupBox('Sky Light (Ambient)')
+        sklay = QtWidgets.QFormLayout()
+        self.sky_intensity = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.sky_intensity.setRange(0, 10_000)
+        self.sky_intensity.setValue(1_000)
+        self.sky_intensity.valueChanged.connect(self.on_sky_intensity_changed)
+        sklay.addRow('Intensity', self.sky_intensity)
+
+        self.sky_color_btn = QtWidgets.QPushButton('Pick Sky Color')
+        self.sky_color_btn.clicked.connect(self.on_pick_sky_color)
+        sklay.addRow('Color', self.sky_color_btn)
+
+        sky_box.setLayout(sklay)
+        layout.addWidget(sky_box)
+
+        # Fog controls
+        fog_box = QtWidgets.QGroupBox('Fog')
+        fog_layout = QtWidgets.QFormLayout()
+        self.fog_density = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.fog_density.setRange(0, 1000)  # maps to 0.0 - 1.0 by dividing by 1000
+        self.fog_density.setValue(10)
+        self.fog_density.valueChanged.connect(self.on_fog_density_changed)
+        fog_layout.addRow('Density', self.fog_density)
+
+        self.fog_color_btn = QtWidgets.QPushButton('Pick Fog Color')
+        self.fog_color_btn.clicked.connect(self.on_pick_fog_color)
+        fog_layout.addRow('Color', self.fog_color_btn)
+
+        fog_box.setLayout(fog_layout)
+        layout.addWidget(fog_box)
+
+        # Exposure / Post process (simple slider)
+        post_box = QtWidgets.QGroupBox('Exposure / Post Process (if present)')
+        post_layout = QtWidgets.QFormLayout()
+        self.exposure = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.exposure.setRange(-20, 20)
+        self.exposure.setValue(0)
+        self.exposure.valueChanged.connect(self.on_exposure_changed)
+        post_layout.addRow('Exposure Bias', self.exposure)
+        post_box.setLayout(post_layout)
+        layout.addWidget(post_box)
+
+        # Presets + Refresh
+        btn_row = QtWidgets.QHBoxLayout()
+        self.refresh_btn = QtWidgets.QPushButton('Refresh Actors')
+        self.refresh_btn.clicked.connect(self.on_refresh)
+        btn_row.addWidget(self.refresh_btn)
+
+        self.apply_btn = QtWidgets.QPushButton('Apply All Now')
+        self.apply_btn.clicked.connect(self.apply_all)
+        btn_row.addWidget(self.apply_btn)
+
+        layout.addLayout(btn_row)
+
+        # Status box
+        self.status = QtWidgets.QLabel('Ready')
+        layout.addWidget(self.status)
+
+        self.setLayout(layout)
+
+        # store colors as QColor for UI and LinearColor for Unreal
+        self._sun_qcolor = QtGui.QColor(255, 244, 214)
+        self._sky_qcolor = QtGui.QColor(180, 200, 255)
+        self._fog_qcolor = QtGui.QColor(200, 200, 200)
+
+    # ---------- UI callbacks ----------
+    def on_time_changed(self, value):
+        hours = value / 100.0 * 24.0 / 24.0  # because value is 0..2400; convert to 0..24
+        # simpler: value/100 maps to 0..24
+        hours = value / 100.0
+        h_int = int(hours)
+        m = int((hours - h_int) * 60)
+        self.time_label.setText(f"{h_int:02d}:{m:02d}")
+        self.status.setText('Time changed — applying...')
+        success = self.bridge.set_time_of_day(hours)
+        if success:
+            self.status.setText('Time applied')
+        else:
+            self.status.setText('Time applied (with warnings)')
+
+    def on_sun_intensity_changed(self, value):
+        # slider range 0..100000, but we might want a different scale; use directly
+        success = self.bridge.set_sun_intensity(float(value))
+        if success:
+            self.status.setText('Sun intensity applied')
+        else:
+            self.status.setText('Sun intensity apply failed')
+
+    def on_pick_sun_color(self):
+        c = QtWidgets.QColorDialog.getColor(self._sun_qcolor, self, 'Pick Sun Color')
+        if c.isValid():
+            self._sun_qcolor = c
+            lin = self.qcolor_to_linearcolor(c)
+            self.bridge.set_sun_color(lin)
+            self.status.setText('Sun color applied')
+
+    def on_sky_intensity_changed(self, value):
+        success = self.bridge.set_skylight_intensity(float(value))
+        if success:
+            self.status.setText('Skylight intensity applied')
+        else:
+            self.status.setText('Skylight intensity failed')
+
+    def on_pick_sky_color(self):
+        c = QtWidgets.QColorDialog.getColor(self._sky_qcolor, self, 'Pick Sky Color')
+        if c.isValid():
+            self._sky_qcolor = c
+            lin = self.qcolor_to_linearcolor(c)
+            self.bridge.set_skylight_color(lin)
+            self.status.setText('Sky color applied')
+
+    def on_fog_density_changed(self, value):
+        density = value / 1000.0
+        success = self.bridge.set_fog_density(density)
+        if success:
+            self.status.setText('Fog density applied')
+        else:
+            self.status.setText('Fog density failed')
+
+    def on_pick_fog_color(self):
+        c = QtWidgets.QColorDialog.getColor(self._fog_qcolor, self, 'Pick Fog Color')
+        if c.isValid():
+            self._fog_qcolor = c
+            lin = self.qcolor_to_linearcolor(c)
+            self.bridge.set_fog_color(lin)
+            self.status.setText('Fog color applied')
+
+    def on_exposure_changed(self, value):
+        # try to apply exposure bias to any PostProcessVolume's blendable settings (this is engine/version dependent)
+        applied = False
+        if unreal:
+            try:
+                vols = self.bridge.find_actors_by_class_name('PostProcessVolume')
+                for v in vols:
+                    try:
+                        comp = v.get_component_by_class(unreal.PostProcessComponent)
+                        if comp:
+                            # common property: settings.auto_exposure_bias
+                            settings = comp.get_editor_property('settings')
+                            # Not all versions allow direct nested property set; attempt commonly used path
+                            try:
+                                settings.set_editor_property('auto_exposure_bias', float(value))
+                                comp.set_editor_property('settings', settings)
+                                applied = True
+                            except Exception:
+                                # fallback: try actor-level
+                                try:
+                                    v.set_editor_property('auto_exposure_bias', float(value))
+                                    applied = True
+                                except Exception:
+                                    pass
+                    except Exception:
+                        continue
+            except Exception as e:
+                log(f"[UI] Exposure apply error: {e}")
+        if applied:
+            self.status.setText('Exposure applied')
+        else:
+            self.status.setText('Exposure not applied (no PostProcessVolume found or version mismatch)')
+
+    def on_refresh(self):
+        self.bridge.refresh_actors()
+        cnt = len(self.bridge.level_actors) if self.bridge.level_actors is not None else 0
+        self.status.setText(f'Refreshed actors: {cnt}')
+
+    def apply_all(self):
+        # apply all current UI values to the scene
+        # Time
+        hours = self.time_slider.value() / 100.0
+        self.bridge.set_time_of_day(hours)
+        # Sun
+        self.bridge.set_sun_intensity(float(self.sun_intensity.value()))
+        self.bridge.set_sun_color(self.qcolor_to_linearcolor(self._sun_qcolor))
+        # Sky
+        self.bridge.set_skylight_intensity(float(self.sky_intensity.value()))
+        self.bridge.set_skylight_color(self.qcolor_to_linearcolor(self._sky_qcolor))
+        # Fog
+        self.bridge.set_fog_density(self.fog_density.value() / 1000.0)
+        self.bridge.set_fog_color(self.qcolor_to_linearcolor(self._fog_qcolor))
+        self.status.setText('All values applied')
+
+    # ---------- helpers ----------
+    @staticmethod
+    def qcolor_to_linearcolor(qc: QtGui.QColor):
+        r = qc.redF()
+        g = qc.greenF()
+        b = qc.blueF()
+        a = qc.alphaF()
+        if unreal:
+            return unreal.LinearColor(r, g, b, a)
+        else:
+            return (r, g, b, a)
+
+
+# ----------------------------
+# Preview Panel
+# ----------------------------
+
+class LightingPreviewPanel(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        
+        # Register this instance for cleanup
+        _ACTIVE_UI_INSTANCES.append(self)
+        
+        self.setWindowTitle("Lighting Tool Preview")
+        self.setObjectName("LightingPreviewPanel")
+        self.resize(600, 500)
+        
+        # Store current lighting values
+        self.time_of_day = 12.0  # 12:00 by default
+        self.sun_intensity = 10000
+        self.sun_color = QtGui.QColor(255, 244, 214)
+        self.sky_intensity = 1000
+        self.sky_color = QtGui.QColor(180, 200, 255)
+        self.fog_density = 0.01
+        self.fog_color = QtGui.QColor(200, 200, 200)
+        self.exposure = 0
+        
+        self.init_ui()
+        
+    def closeEvent(self, event):
+        """Override close event to properly clean up"""
+        try:
+            if self in _ACTIVE_UI_INSTANCES:
+                _ACTIVE_UI_INSTANCES.remove(self)
+        except ValueError:
+            pass
+        event.accept()
+        
+    def init_ui(self):
+        layout = QtWidgets.QVBoxLayout()
+        
+        # Preview canvas
+        self.preview_canvas = QtWidgets.QLabel()
+        self.preview_canvas.setMinimumSize(400, 300)
+        self.preview_canvas.setStyleSheet("border: 1px solid #444; background-color: #1a1a1a;")
+        self.preview_canvas.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.preview_canvas)
+        
+        # Controls for testing
+        controls_layout = QtWidgets.QHBoxLayout()
+        
+        # Time of day slider
+        time_layout = QtWidgets.QVBoxLayout()
+        time_label = QtWidgets.QLabel("Time of Day")
+        self.time_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.time_slider.setRange(0, 2400)
+        self.time_slider.setValue(1200)
+        self.time_slider.valueChanged.connect(self.on_time_changed)
+        time_layout.addWidget(time_label)
+        time_layout.addWidget(self.time_slider)
+        controls_layout.addLayout(time_layout)
+        
+        # Sun intensity
+        sun_layout = QtWidgets.QVBoxLayout()
+        sun_label = QtWidgets.QLabel("Sun Intensity")
+        self.sun_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.sun_slider.setRange(0, 100000)
+        self.sun_slider.setValue(10000)
+        self.sun_slider.valueChanged.connect(self.on_sun_intensity_changed)
+        sun_layout.addWidget(sun_label)
+        sun_layout.addWidget(self.sun_slider)
+        controls_layout.addLayout(sun_layout)
+        
+        layout.addLayout(controls_layout)
+        
+        # Update button
+        update_btn = QtWidgets.QPushButton("Update Preview")
+        update_btn.clicked.connect(self.update_preview)
+        layout.addWidget(update_btn)
+        
+        self.setLayout(layout)
+        
+        # Initial preview
+        self.update_preview()
+    
+    def on_time_changed(self, value):
+        self.time_of_day = value / 100.0
+        self.update_preview()
+    
+    def on_sun_intensity_changed(self, value):
+        self.sun_intensity = value
+        self.update_preview()
+    
+    def update_preview(self):
+        # Create a pixmap to draw our preview
+        pixmap = QtGui.QPixmap(400, 300)
+        pixmap.fill(QtGui.QColor(30, 30, 50))  # Dark blue background
+        
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        
+        # Draw sky with gradient based on time of day
+        self.draw_sky(painter)
+        
+        # Draw sun/moon based on time of day
+        self.draw_sun_moon(painter)
+        
+        # Draw ground
+        self.draw_ground(painter)
+        
+        # Draw scene objects with lighting
+        self.draw_scene(painter)
+        
+        # Apply fog effect
+        self.apply_fog(painter)
+        
+        painter.end()
+        
+        self.preview_canvas.setPixmap(pixmap)
+    
+    def draw_sky(self, painter):
+        # Create gradient for sky based on time of day
+        gradient = QtGui.QLinearGradient(0, 0, 0, 300)
+        
+        # Calculate colors based on time of day
+        if 6 <= self.time_of_day <= 18:  # Daytime
+            # Sky color transitions from dawn -> day -> dusk
+            if self.time_of_day < 8:  # Dawn
+                top_color = QtGui.QColor(70, 100, 180)
+                bottom_color = QtGui.QColor(180, 150, 100)
+            elif self.time_of_day > 16:  # Dusk
+                top_color = QtGui.QColor(80, 90, 160)
+                bottom_color = QtGui.QColor(200, 120, 80)
+            else:  # Midday
+                top_color = self.sky_color
+                bottom_color = QtGui.QColor(140, 180, 255)
+        else:  # Nighttime
+            top_color = QtGui.QColor(10, 15, 40)
+            bottom_color = QtGui.QColor(30, 35, 70)
+        
+        gradient.setColorAt(0, top_color)
+        gradient.setColorAt(1, bottom_color)
+        
+        painter.fillRect(0, 0, 400, 200, gradient)
+    
+    def draw_sun_moon(self, painter):
+        # Calculate position based on time of day
+        # 6:00 = left edge, 12:00 = top center, 18:00 = right edge
+        import math
+        x = 200 + 180 * math.cos((self.time_of_day - 6) * math.pi / 12)
+        y = 100 - 80 * math.sin((self.time_of_day - 6) * math.pi / 12)
+        
+        if 6 <= self.time_of_day <= 18:  # Day - draw sun
+            # Calculate sun brightness based on intensity
+            brightness = min(255, self.sun_intensity // 40)
+            sun_color = QtGui.QColor(brightness, brightness, 200)
+            
+            # Draw sun glow
+            radial = QtGui.QRadialGradient(x, y, 30)
+            radial.setColorAt(0, QtGui.QColor(255, 255, 200, 200))
+            radial.setColorAt(1, QtGui.QColor(255, 200, 100, 0))
+            painter.setBrush(QtGui.QBrush(radial))
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawEllipse(QtCore.QPointF(x, y), 30, 30)
+            
+            # Draw sun core
+            painter.setBrush(QtGui.QBrush(sun_color))
+            painter.drawEllipse(QtCore.QPointF(x, y), 15, 15)
+        else:  # Night - draw moon
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(200, 200, 220)))
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawEllipse(QtCore.QPointF(x, y), 12, 12)
+    
+    def draw_ground(self, painter):
+        # Draw ground with color based on lighting
+        ground_color = QtGui.QColor(30, 60, 20)
+        
+        # Adjust ground color based on sun intensity and time
+        if 6 <= self.time_of_day <= 18:
+            intensity_factor = self.sun_intensity / 100000
+            adjust = int(60 * intensity_factor)
+            ground_color = QtGui.QColor(
+                min(255, 30 + adjust),
+                min(255, 60 + adjust),
+                min(255, 20 + adjust//2)
+            )
+        
+        painter.fillRect(0, 200, 400, 100, ground_color)
+    
+    def draw_scene(self, painter):
+        # Draw some simple objects to show lighting effects
+        
+        # Calculate lighting direction based on time
+        light_angle = (self.time_of_day - 6) * 15  # Degrees
+        
+        # Draw a simple building
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(100, 80, 60)))
+        painter.setPen(QtGui.QPen(QtGui.QColor(70, 50, 30), 2))
+        painter.drawRect(100, 150, 80, 50)  # Main building
+        
+        # Draw roof
+        roof_points = [
+            QtCore.QPoint(100, 150),
+            QtCore.QPoint(140, 120),
+            QtCore.QPoint(180, 150)
+        ]
+        painter.drawPolygon(roof_points)
+        
+        # Draw windows with lighting effect
+        window_brightness = min(255, 50 + (self.sun_intensity // 400))
+        window_color = QtGui.QColor(window_brightness, window_brightness, 150)
+        
+        painter.setBrush(QtGui.QBrush(window_color))
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.drawRect(110, 160, 20, 15)
+        painter.drawRect(150, 160, 20, 15)
+        
+        # Draw a tree
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(50, 80, 30)))
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.drawEllipse(250, 130, 40, 40)  # Tree top
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(80, 50, 20)))
+        painter.drawRect(265, 170, 10, 30)  # Tree trunk
+    
+    def apply_fog(self, painter):
+        # Apply a fog effect based on density and color
+        if self.fog_density > 0:
+            fog_alpha = min(200, int(self.fog_density * 20000))
+            fog_color = self.fog_color
+            fog_color.setAlpha(fog_alpha)
+            
+            painter.setBrush(QtGui.QBrush(fog_color))
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawRect(0, 0, 400, 300)
+
+
+# Integration with the existing Lighting Tool UI
+class LightingToolUIWithPreview(LightingToolUI):
+    def __init__(self, unreal_bridge=None):
+        super().__init__(unreal_bridge)
+        self.preview_panel = None
+        self.add_preview_button()
+    
+    def closeEvent(self, event):
+        """Clean up preview panel too"""
+        if self.preview_panel:
+            self.preview_panel.close()
+            self.preview_panel = None
+        super().closeEvent(event)
+    
+    def add_preview_button(self):
+        # Add a preview button to the existing UI
+        preview_btn = QtWidgets.QPushButton('Show Preview Panel')
+        preview_btn.clicked.connect(self.show_preview)
+        
+        # Add to the existing button row
+        btn_layout = self.layout().itemAt(self.layout().count() - 2).layout()
+        btn_layout.addWidget(preview_btn)
+    
+    def show_preview(self):
+        if not self.preview_panel:
+            self.preview_panel = LightingPreviewPanel()
+        
+        # Sync preview with current UI values
+        self.preview_panel.time_of_day = self.time_slider.value() / 100.0
+        self.preview_panel.sun_intensity = self.sun_intensity.value()
+        self.preview_panel.sun_color = self._sun_qcolor
+        self.preview_panel.sky_intensity = self.sky_intensity.value()
+        self.preview_panel.sky_color = self._sky_qcolor
+        self.preview_panel.fog_density = self.fog_density.value() / 1000.0
+        self.preview_panel.fog_color = self._fog_qcolor
+        
+        self.preview_panel.update_preview()
+        self.preview_panel.show()
+
+
+# ----------------------------
+# Robust Entry Points
+# ----------------------------
+
+def run_ui_safe():
+    """Safe version that cleans up existing instances before creating new ones"""
+    
+    # Clean up any existing instances first
+    cleanup_qt_instances()
+    
+    app = QtWidgets.QApplication.instance()
+    created_app = False
+    
+    # Check if there's already an application instance
+    if not app:
+        app = QtWidgets.QApplication(sys.argv)
+        created_app = True
+        app.setApplicationName("LightingTool")
+    else:
+        # Reuse existing application
+        app.setApplicationName("LightingTool")
+    
+    # Check if a window with our object name already exists
+    existing_windows = app.topLevelWidgets()
+    for window in existing_windows:
+        if window.objectName() == "LightingToolUI":
+            window.close()
+            window.deleteLater()
+    
+    bridge = UnrealBridge()
+    ui = LightingToolUIWithPreview(bridge)  # Use the version with preview
+    ui.show()
+    
+    # Only start event loop if we created the application
+    if created_app:
+        # Use a timer to periodically check if we should exit
+        timer = QtCore.QTimer()
+        timer.timeout.connect(lambda: None)  # Empty function to keep event loop alive
+        timer.start(100)
+        
+        # Instead of app.exec(), we use this approach for better integration
+        try:
+            from unreal import get_unreal_slate_application
+            # If we're in Unreal, we don't need to exec the app
+            return ui
+        except:
+            # If running standalone, exec the app
+            sys.exit(app.exec())
+    
+    return ui
+
+
+def run_ui_unreal():
+    """
+    Optimized version for Unreal Editor's Python environment
+    Call this from Unreal's Python console
+    """
+    try:
+        # Check if we're in Unreal
+        if unreal is None:
+            print("Not running in Unreal Editor - using standalone mode")
+            return run_ui_safe()
+        
+        # Unreal-specific initialization
+        app = QtWidgets.QApplication.instance()
+        
+        # Look for existing lighting tool window
+        if app:
+            for w in app.topLevelWidgets():
+                if w.objectName() == "LightingToolUI":
+                    print("Found existing Lighting Tool - bringing to front")
+                    w.raise_()
+                    w.activateWindow()
+                    return w
+        
+        # Create new application if needed
+        if not app:
+            app = QtWidgets.QApplication(sys.argv)
+            app.setApplicationName("UnrealLightingTool")
+        
+        # Create and show UI
+        bridge = UnrealBridge()
+        ui = LightingToolUIWithPreview(bridge)  # Use the version with preview
+        ui.show()
+        
+        # In Unreal, we don't call app.exec() - the editor handles the event loop
+        print("Lighting Tool launched successfully!")
+        return ui
+        
+    except Exception as e:
+        print(f"Failed to launch Lighting Tool: {e}")
+        print
