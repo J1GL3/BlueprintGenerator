@@ -1,0 +1,327 @@
+import sys
+import time
+import math
+import unreal
+
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
+    QCheckBox, QPushButton, QTabWidget
+)
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QPixmap, QImage, QPainter, QLinearGradient
+
+
+class LightingTool(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("UE5 Lighting Tool")
+        self.setGeometry(120, 120, 720, 900)
+
+        self.sun_actor = None
+        self.moon_actor = None
+        self.sun_component = None
+        self.moon_component = None
+        self.auto_cycle_start = time.time()
+
+        self.find_or_create_lights()
+        self.setup_ui()
+
+        self.preview_timer = QTimer(self)
+        self.preview_timer.timeout.connect(self.update_preview_from_sliders)
+        self.preview_timer.start(100)
+
+    # ------------------------------------------------------------------
+    # LIGHT SETUP
+    # ------------------------------------------------------------------
+    def find_or_create_lights(self):
+        """Find or spawn Sun and Moon DirectionalLights."""
+        try:
+            editor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+            actors = editor_subsystem.get_all_level_actors()
+
+            # Look for existing ones
+            for actor in actors:
+                if actor.get_class().get_name() == "DirectionalLight":
+                    name = actor.get_name().lower()
+                    comp = getattr(actor, "light_component", None)
+                    if "moon" in name:
+                        self.moon_actor = actor
+                        self.moon_component = comp
+                    elif "sun" in name or not self.sun_actor:
+                        self.sun_actor = actor
+                        self.sun_component = comp
+
+            # Spawn missing ones
+            if not self.sun_actor:
+                self.sun_actor = editor_subsystem.spawn_actor_from_class(
+                    unreal.DirectionalLight, unreal.Vector(0, 0, 1000), unreal.Rotator(-45, 0, 0)
+                )
+                self.sun_actor.set_actor_label("SunLight")
+                self.sun_component = getattr(self.sun_actor, "light_component", None)
+                unreal.log("Lighting Tool: Spawned SunLight.")
+
+            if not self.moon_actor:
+                self.moon_actor = editor_subsystem.spawn_actor_from_class(
+                    unreal.DirectionalLight, unreal.Vector(0, 0, 1000), unreal.Rotator(135, 0, 0)
+                )
+                self.moon_actor.set_actor_label("MoonLight")
+                self.moon_component = getattr(self.moon_actor, "light_component", None)
+                if self.moon_component:
+                    self.moon_component.set_editor_property("intensity", 20000.0)
+                unreal.log("Lighting Tool: Spawned MoonLight.")
+
+        except Exception as e:
+            unreal.log_error(f"Lighting Tool: Error setting up lights: {e}")
+
+    # ------------------------------------------------------------------
+    # UI SETUP
+    # ------------------------------------------------------------------
+    def setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+
+        tabs = QTabWidget()
+        tabs.addTab(self.create_basic_tab(), "Basic Lighting")
+        tabs.addTab(self.create_time_tab(), "Time of Day")
+        layout.addWidget(tabs)
+
+        self.preview_label = QLabel("Preview Loading...")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(520, 360)
+        self.preview_label.setStyleSheet("background-color:#222; border:2px solid #444; color:white;")
+        layout.addWidget(self.preview_label)
+
+        # --- Apply + Utility buttons ---
+        button_row = QHBoxLayout()
+        self.apply_button = QPushButton("Apply Changes")
+        self.apply_button.clicked.connect(self.apply_lighting_changes)
+        button_row.addWidget(self.apply_button)
+
+        reload_btn = QPushButton("Re-find Lights")
+        reload_btn.clicked.connect(self.find_or_create_lights)
+        button_row.addWidget(reload_btn)
+
+        reset_btn = QPushButton("Reset Defaults")
+        reset_btn.clicked.connect(self.reset_all)
+        button_row.addWidget(reset_btn)
+        layout.addLayout(button_row)
+
+        self.status_label = QLabel("Tool ready.")
+        layout.addWidget(self.status_label)
+
+    # ------------------------------------------------------------------
+    # BASIC TAB
+    # ------------------------------------------------------------------
+    def create_basic_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        def make_slider_row(name, minv, maxv, start):
+            row = QHBoxLayout()
+            label = QLabel(f"{name}:")
+            slider = QSlider(Qt.Horizontal)
+            slider.setRange(minv, maxv)
+            slider.setValue(start)
+            value = QLabel(str(start))
+            value.setFixedWidth(50)
+            slider.valueChanged.connect(lambda v: value.setText(str(v)))
+            row.addWidget(label)
+            row.addWidget(slider)
+            row.addWidget(value)
+            layout.addLayout(row)
+            return slider, value
+
+        self.red_slider, _ = make_slider_row("Red", 0, 100, 100)
+        self.green_slider, _ = make_slider_row("Green", 0, 100, 100)
+        self.blue_slider, _ = make_slider_row("Blue", 0, 100, 100)
+        self.intensity_slider, _ = make_slider_row("Intensity", 0, 200, 100)
+        return widget
+
+    # ------------------------------------------------------------------
+    # TIME TAB
+    # ------------------------------------------------------------------
+    def create_time_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        self.time_slider = QSlider(Qt.Horizontal)
+        self.time_slider.setRange(0, 2400)
+        self.time_slider.setValue(1200)
+        layout.addWidget(QLabel("Time of Day:"))
+        layout.addWidget(self.time_slider)
+
+        self.time_label = QLabel("12:00 PM")
+        layout.addWidget(self.time_label)
+
+        self.daynight_cycle_check = QCheckBox("Enable Day/Night Cycle")
+        layout.addWidget(self.daynight_cycle_check)
+
+        layout.addWidget(QLabel("Cycle Duration (seconds per full day):"))
+        self.cycle_seconds_slider = QSlider(Qt.Horizontal)
+        self.cycle_seconds_slider.setRange(10, 600)
+        self.cycle_seconds_slider.setValue(60)
+        self.cycle_seconds_label = QLabel("60 seconds per 24h")
+        self.cycle_seconds_slider.valueChanged.connect(
+            lambda v: self.cycle_seconds_label.setText(f"{v} seconds per 24h day")
+        )
+        layout.addWidget(self.cycle_seconds_slider)
+        layout.addWidget(self.cycle_seconds_label)
+        return widget
+
+    # ------------------------------------------------------------------
+    # PREVIEW UPDATE
+    # ------------------------------------------------------------------
+    def update_preview_from_sliders(self):
+        try:
+            # Color values
+            r = self.red_slider.value() / 100.0
+            g = self.green_slider.value() / 100.0
+            b = self.blue_slider.value() / 100.0
+            intensity_factor = self.intensity_slider.value() / 100.0
+
+            # Time of day (fraction of 24h)
+            if self.daynight_cycle_check.isChecked():
+                sec_day = max(1, self.cycle_seconds_slider.value())
+                elapsed = (time.time() - self.auto_cycle_start) % sec_day
+                frac = elapsed / sec_day
+                self.time_slider.blockSignals(True)
+                self.time_slider.setValue(int(frac * 2400))
+                self.time_slider.blockSignals(False)
+            else:
+                frac = (self.time_slider.value() % 2400) / 2400.0
+
+            # Update preview
+            self.update_preview_image(r, g, b, frac, intensity_factor)
+            self.update_time_label(frac)
+            self.set_sun_and_moon_rotation_from_time(frac)
+
+        except Exception as e:
+            unreal.log_warning(f"Preview error: {e}")
+
+    def update_preview_image(self, r, g, b, frac, intensity_factor):
+        """Draw a gradient preview with RGB influence."""
+        try:
+            w, h = 520, 360
+            img = QImage(w, h, QImage.Format_RGB32)
+            painter = QPainter(img)
+
+            daylight = max(0.0, math.cos(frac * math.pi * 2))
+            nightlight = 1.0 - daylight
+
+            # Apply color tint (RGB sliders)
+            base_r = int((30 + daylight * 200) * r)
+            base_g = int((60 + daylight * 180) * g)
+            base_b = int((120 + daylight * 100) * b)
+
+            bottom_r = int((10 + daylight * 180) * r)
+            bottom_g = int((20 + daylight * 160) * g)
+            bottom_b = int((40 + daylight * 120) * b)
+
+            top_color = QColor(base_r, base_g, base_b)
+            bottom_color = QColor(bottom_r, bottom_g, bottom_b)
+
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0, top_color)
+            grad.setColorAt(1, bottom_color)
+            painter.fillRect(img.rect(), grad)
+
+            painter.setRenderHint(QPainter.Antialiasing)
+            if daylight > 0.05:
+                painter.setBrush(QColor(255, 255, 200, int(180 * daylight)))
+                painter.drawEllipse(int(w * 0.7), int(h * (0.4 - 0.2 * daylight)), 60, 60)
+            else:
+                painter.setBrush(QColor(200, 200, 255, int(180 * nightlight)))
+                painter.drawEllipse(int(w * 0.6), int(h * (0.3 + 0.2 * nightlight)), 50, 50)
+
+            painter.end()
+            self.preview_label.setPixmap(QPixmap.fromImage(img))
+        except Exception as e:
+            unreal.log_warning(f"Preview drawing error: {e}")
+
+    def update_time_label(self, frac):
+        hours = int(frac * 24)
+        minutes = int((frac * 24 - hours) * 60)
+        suffix = "AM"
+        display_hour = hours
+        if hours >= 12:
+            suffix = "PM"
+            if hours > 12:
+                display_hour -= 12
+        if display_hour == 0:
+            display_hour = 12
+        self.time_label.setText(f"{display_hour:02d}:{minutes:02d} {suffix}")
+
+    # ------------------------------------------------------------------
+    # APPLY TO WORLD
+    # ------------------------------------------------------------------
+    def apply_lighting_changes(self):
+        try:
+            r = self.red_slider.value() / 100.0
+            g = self.green_slider.value() / 100.0
+            b = self.blue_slider.value() / 100.0
+            intensity = (self.intensity_slider.value() / 100.0) * 100000.0
+            frac = (self.time_slider.value() % 2400) / 2400.0
+
+            color = unreal.LinearColor(r, g, b, 1.0)
+            if self.sun_component:
+                self.sun_component.set_editor_property("light_color", color)
+                self.sun_component.set_editor_property("intensity", intensity)
+
+            self.set_sun_and_moon_rotation_from_time(frac)
+            self.status_label.setText("Lighting changes applied to world.")
+        except Exception as e:
+            self.status_label.setText(f"Apply error: {e}")
+
+    # ------------------------------------------------------------------
+    # UTILITIES
+    # ------------------------------------------------------------------
+    def reset_all(self):
+        self.red_slider.setValue(100)
+        self.green_slider.setValue(100)
+        self.blue_slider.setValue(100)
+        self.intensity_slider.setValue(100)
+        self.time_slider.setValue(1200)
+        self.daynight_cycle_check.setChecked(False)
+        self.cycle_seconds_slider.setValue(60)
+        self.status_label.setText("Reset complete.")
+
+    def set_sun_and_moon_rotation_from_time(self, frac):
+        """Rotate lights smoothly according to time of day."""
+        try:
+            sun_pitch = (frac - 0.25) * 360.0
+            moon_pitch = sun_pitch + 180.0
+            sun_intensity_factor = max(0.0, math.cos(frac * math.pi * 2))
+            moon_intensity_factor = max(0.0, math.cos((frac + 0.5) * math.pi * 2))
+
+            if self.sun_actor and self.sun_component:
+                self.sun_actor.set_actor_rotation(unreal.Rotator(sun_pitch, 0, 0), False)
+                base_intensity = (self.intensity_slider.value() / 100.0) * 100000.0
+                self.sun_component.set_editor_property("intensity", base_intensity * sun_intensity_factor)
+
+            if self.moon_actor and self.moon_component:
+                self.moon_actor.set_actor_rotation(unreal.Rotator(moon_pitch, 0, 0), False)
+                self.moon_component.set_editor_property("intensity", 20000.0 * moon_intensity_factor)
+
+        except Exception as e:
+            unreal.log_warning(f"Lighting Tool: Failed to rotate lights: {e}")
+
+
+_tool_ref = None
+
+def launch_lighting_tool():
+    """Launch safely inside UE5.6."""
+    global _tool_ref
+    try:
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+        _tool_ref = LightingTool()
+        _tool_ref.show()
+        app.exec()
+    except Exception as e:
+        unreal.log_error(f"Lighting Tool launch failed: {e}")
+
+
+if __name__ == "__main__":
+    launch_lighting_tool()

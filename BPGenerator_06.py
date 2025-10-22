@@ -210,72 +210,83 @@ class BatchBlueprintCreator(QWidget):
                     continue
 
                 bp_name = f"{asset.get_name()}_BP"
-                unique_name = tools.create_unique_asset_name(f"{DESTINATION_FOLDER}/{bp_name}", "")
-                bp_name = unique_name[1] if isinstance(unique_name, (list, tuple)) else unique_name
-
-                # ✅ Create the Actor Blueprint
+                
+                # ✅ ALTERNATIVE APPROACH: Create blueprint from scratch with proper component setup
                 factory = unreal.BlueprintFactory()
                 factory.set_editor_property("ParentClass", unreal.Actor)
                 bp = tools.create_asset(bp_name, DESTINATION_FOLDER, unreal.Blueprint, factory)
+                
                 if not bp:
                     unreal.log_warning(f"❌ Failed to create blueprint for {asset.get_name()}")
                     continue
 
-                # ✅ Get BlueprintGeneratedClass using the asset itself
-                bp_generated_class = bp.GeneratedClass if hasattr(bp, "GeneratedClass") else None
-                if not bp_generated_class:
-                    unreal.log_warning(f"❌ Could not retrieve GeneratedClass for {bp.get_name()}")
-                    continue
+                # ✅ Use blueprint component system
+                success = self.setup_blueprint_components(bp, asset)
+                
+                if success:
+                    unreal.log(f"✅ Blueprint '{bp.get_name()}' created successfully with static mesh")
+                else:
+                    unreal.log_warning(f"⚠️ Blueprint created but component setup failed: {bp.get_name()}")
 
-                # ✅ Get Class Default Object (CDO)
-                cdo = bp_generated_class.get_default_object()
-                if not cdo:
-                    unreal.log_warning(f"❌ Could not get CDO for {bp.get_name()}")
-                    continue
-
-                # ✅ Create StaticMeshComponent as subobject
-                mesh_comp = unreal.StaticMeshComponent(cdo)
-                mesh_comp.set_editor_property("static_mesh", asset)
-                mesh_comp.set_editor_property("mobility", unreal.ComponentMobility.MOVABLE)
-
-                # ✅ Attach as root (if no root yet)
-                cdo.set_root_component(mesh_comp)
-                cdo.add_instance_component(mesh_comp)
-
-                # ✅ Apply collision/gravity settings
-                if hasattr(mesh_comp, "enable_gravity"):
-                    mesh_comp.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
-
-                if hasattr(mesh_comp, "generate_overlap_events"):
-                    mesh_comp.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
-
-                if hasattr(mesh_comp, "use_continuous_collision_detection"):
-                    mesh_comp.set_editor_property(
-                        "use_continuous_collision_detection", self.ccd_cb.isChecked()
-                    )
-
-                if hasattr(mesh_comp, "collision_complexity"):
-                    mesh_comp.set_editor_property(
-                        "collision_complexity",
-                        unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX
-                        if self.simple_collision_cb.isChecked()
-                        else unreal.CollisionTraceFlag.CTF_USE_DEFAULT
-                    )
-
-                preset = self.collision_combo.currentText()
-                if hasattr(mesh_comp, "collision_profile_name"):
-                    mesh_comp.set_editor_property("collision_profile_name", unreal.Name(preset))
-
-                # ✅ Save and open the asset
+                # Save and open
                 unreal.EditorAssetLibrary.save_loaded_asset(bp)
                 editor_subsystem.open_editor_for_assets([bp])
-
-                unreal.log(f"✅ Created '{bp.get_name()}' with StaticMesh '{asset.get_name()}' successfully applied.")
 
             except Exception as e:
                 unreal.log_warning(f"⚠️ Error creating BP for {asset.get_name()}: {e}")
 
+    def setup_blueprint_components(self, blueprint, static_mesh):
+        """Setup blueprint components using component templates"""
+        try:
+            # Access the BlueprintGeneratedClass
+            generated_class = blueprint.generated_class
+            
+            # Get the CDO using the correct method
+            cdo = generated_class.get_editor_property("ClassDefaultObject")
+            
+            # Create the static mesh component
+            component_name = f"{static_mesh.get_name()}_Mesh"
+            
+            # ✅ Create component using the actor as outer
+            mesh_component = unreal.StaticMeshComponent(cdo)
+            mesh_component.set_editor_property("static_mesh", static_mesh)
+            
+            # ✅ Set component properties
+            mesh_component.set_editor_property("relative_location", unreal.Vector(0, 0, 0))
+            mesh_component.set_editor_property("relative_rotation", unreal.Rotator(0, 0, 0))
+            mesh_component.set_editor_property("relative_scale", unreal.Vector(1, 1, 1))
+            
+            # Apply all settings
+            mesh_component.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
+            mesh_component.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
+            mesh_component.set_editor_property("use_continuous_collision_detection", self.ccd_cb.isChecked())
 
+            if self.simple_collision_cb.isChecked():
+                mesh_component.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
+            else:
+                mesh_component.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+
+            preset = self.collision_combo.currentText()
+            mesh_component.set_editor_property("collision_profile_name", preset)
+
+            # ✅ Set as root component
+            cdo.set_editor_property("root_component", mesh_component)
+            
+            # ✅ Add to components array
+            cdo.add_instance_component(mesh_component)
+
+            # Mark blueprint as modified
+            blueprint.set_editor_property("status", unreal.BlueprintStatus.BS_Dirty)
+            
+            # Compile the blueprint
+            blueprint.post_load()
+            
+            unreal.log(f"✅ Component setup complete for {blueprint.get_name()}")
+            return True
+            
+        except Exception as e:
+            unreal.log_warning(f"Error in setup_blueprint_components: {e}")
+            return False
 
 
 
