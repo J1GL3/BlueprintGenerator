@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 DestinationFolder = "/Game/GeneratedBlueprints"
 WindowWidth = 450
-WindowHeight = 700
+WindowHeight = 450
 
 # Ensure folder exists ------------------------------------------------------
 if not unreal.EditorAssetLibrary.does_directory_exist(DestinationFolder):
@@ -25,7 +25,7 @@ class CollapsibleBox(QGroupBox):
     def __init__(self, title="", parent=None):
         super().__init__(parent)
         self.setTitle("")
-        self.toggle_button = QToolButton(test=title, checkable=True, checked=False)
+        self.toggle_button = QToolButton(text=title, checkable=True, checked=False)
         self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.toggle_button.setArrowType(Qt.RightArrow)
         # Button Border ----------------------------------
@@ -208,7 +208,7 @@ class BatchBlueprintCreator(QWidget):
 
         #CCD ------------------------------------------------------------------------------------------
         #adding in a check box for CCD, asigning it to the content part and keeping a reference for it
-        self.ccd_checkbox = self.add_option(content, "Continuous Collision Detection")
+        self.ccd_checkbox = self._add_option(content, "Continuous Collision Detection")
 
 
 
@@ -237,7 +237,7 @@ class BatchBlueprintCreator(QWidget):
         # setting the width of the button for consistancy
         self.generate_button.setFixedWidth(180)
         #maikling it so when the button is clicked it calls the function "on generate"
-        self.generate_button.clicked.connect(self.on_generated)
+        self.generate_button.clicked.connect(self.on_generate)
         #adding the button to the layout
         bottom_button_row.addWidget(self.generate_button)
         #adding the bottom button row to the content section and automatically puts it at the bottom
@@ -254,7 +254,7 @@ class BatchBlueprintCreator(QWidget):
 
         #live selected count -------------------------------------------------------------------------------------
         #creating a variable to remember last number of selected assets to detect if anything has changed
-        self._lat_asset_count = 0
+        self._last_asset_count = 0
         #creating a timer
         self.timer = QTimer()
         #conection the timers timeout signal to the "update_selected_count" function
@@ -268,7 +268,7 @@ class BatchBlueprintCreator(QWidget):
         #loop to uncheck boxes -----------------------------------------------------------------------------------
         for cb in [self.gravity_checkbox, self.simple_collision_checkbox, self.gen_overlap_checkbox, self.ccd_checkbox]:
             #make sure unchecked
-            cb.setCheckedState(Qt.Unchecked)
+            cb.setCheckState(Qt.Unchecked)
 
 
 
@@ -316,7 +316,7 @@ class BatchBlueprintCreator(QWidget):
             #updates stored count to new count
             self._last_asset_count = count
             #updates the label at the bottom of the UI so the user can see
-            self.info_label.setText(f"Selected assets: {count}")    
+            self.selected_assets.setText(f"Selected assets: {count}")    
 
         
 
@@ -333,6 +333,8 @@ class BatchBlueprintCreator(QWidget):
         #logs how many assets are selected
         unreal.log(f"Generating blueprints for {len(assets)} assets...")
         
+
+        asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
         #creating a loop to itterate through each individual asset
         for asset in assets:
             #checking if the selected asset is a static mesh if not it jsut skips it doesnt break
@@ -340,9 +342,60 @@ class BatchBlueprintCreator(QWidget):
                 if not isinstance(asset, unreal.StaticMesh):
                     unreal.log_warning(f"Skipping {asset.get_name()} (not a StaticMesh).")
                     continue
-            #checks to see if anything raises an error inside the try black and logs it as a warning instead of crashing the tool
+
+                # Define asset name & path
+                bp_name = f"BP_{asset.get_name()}"
+                bp_path = f"{DestinationFolder}/{bp_name}"
+
+                # Check if BP already exists
+                if unreal.EditorAssetLibrary.does_asset_exist(bp_path):
+                    unreal.log_warning(f"Blueprint {bp_name} already exists. Skipping.")
+                    continue
+
+                # Create the Blueprint asset
+                bp_factory = unreal.BlueprintFactory()
+                bp_factory.set_editor_property("ParentClass", unreal.Actor)
+                new_bp = asset_tools.create_asset(bp_name, DestinationFolder, unreal.Blueprint, bp_factory)
+
+                if not new_bp:
+                    unreal.log_warning(f"❌ Failed to create Blueprint for {asset.get_name()}")
+                    continue
+
+                unreal.log(f"✅ Created empty Blueprint: {bp_name}")
+                
+                 # --- Add StaticMeshComponent using SubobjectDataSubsystem ---
+                subsystem = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
+                handles = subsystem.k2_gather_subobject_data_for_blueprint(context=new_bp)
+                if not handles:
+                    unreal.log_warning(f"Could not gather subobject data for {bp_name}")
+                    continue
+
+                root_handle = handles[0]  # Root is usually DefaultSceneRoot
+
+                params = unreal.AddNewSubobjectParams(
+                    parent_handle=root_handle,
+                    new_class=unreal.StaticMeshComponent,
+                    blueprint_context=new_bp
+                )
+
+                sub_handle, fail_reason = subsystem.add_new_subobject(params=params)
+                if fail_reason != unreal.AddNewSubobjectFailureReason.NONE:
+                    unreal.log_warning(f"❌ Failed to add StaticMeshComponent to {bp_name}: {fail_reason}")
+                    continue
+
+                # Rename component
+                subsystem.rename_subobject(handle=sub_handle, new_name=unreal.Text("StaticMeshComp"))
+
+                # --- Assign the StaticMesh to that component ---
+                static_mesh_comp = subsystem.get_object_from_handle(sub_handle)
+                static_mesh_comp.set_editor_property("StaticMesh", asset)
+
+                # --- Save the Blueprint ---
+                unreal.EditorAssetLibrary.save_loaded_asset(new_bp)
+                unreal.log(f"💾 Saved Blueprint: {bp_name}")
+
             except Exception as e:
-                unreal.log_warning(f"Error creating BP for {asset.get_name()}: {e}")
+                unreal.log_warning(f"⚠️ Error creating BP for {asset.get_name()}: {e}")
         
 
 
