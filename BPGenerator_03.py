@@ -169,7 +169,7 @@ class BatchBlueprintCreator(QWidget):
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
         self.info_label.setText(f"Selected assets: {len(assets)}")
 
-    # ------------- Main logic ------------- #
+    # ------------- Main logic (UE5.6 Fixed, robust) ------------- #
     def on_generate(self):
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
         self.update_selected_count()
@@ -192,41 +192,175 @@ class BatchBlueprintCreator(QWidget):
                     unreal.log_warning(f"Failed to create blueprint for {asset.get_name()}")
                     continue
 
-                component = None
-                if isinstance(asset, unreal.StaticMesh):
-                    component = unreal.EditorUtilities.add_component_to_blueprint(bp, unreal.StaticMeshComponent, "StaticMeshComponent")
-                    if component:
-                        component.set_editor_property("static_mesh", asset)
-                elif isinstance(asset, unreal.SkeletalMesh):
-                    component = unreal.EditorUtilities.add_component_to_blueprint(bp, unreal.SkeletalMeshComponent, "SkeletalMeshComponent")
-                    if component:
-                        component.set_editor_property("skeletal_mesh", asset)
-                else:
-                    component = unreal.EditorUtilities.add_component_to_blueprint(bp, unreal.SceneComponent, "SceneRoot")
+                # === Attempt 1: Use SubobjectDataSubsystem (editor's Add Component flow) ===
+                try:
+                    subsystem = None
+                    try:
+                        subsystem = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
+                    except Exception:
+                        subsystem = None
 
-                # ---- Apply UI settings ----
-                if component:
-                    component.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
-                    component.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
+                    if subsystem:
+                        try:
+                            BFL = unreal.SubobjectDataBlueprintFunctionLibrary
 
-                    if hasattr(component, "use_continuous_collision_detection"):
-                        component.set_editor_property(
-                            "use_continuous_collision_detection",
-                            self.ccd_cb.isChecked()
-                        )
+                            # Gather root subobject data handles for this blueprint
+                            handles = subsystem.k2_gather_subobject_data_for_blueprint(context=bp)
+                            if not handles:
+                                unreal.log_warning(f"Could not gather root subobject data for {bp.get_name()}")
+                                # fallthrough to SCS approach below
+                                raise RuntimeError("no_handles")
 
-                    if hasattr(component, "collision_complexity"):
-                        if self.complex_simple_cb.isChecked():
-                            component.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
-                        else:
-                            component.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+                            root_handle = handles[0]
+                            # Prepare AddNewSubobjectParams. If AddNewSubobjectParams is not available, construct via kwargs
+                            try:
+                                params = unreal.AddNewSubobjectParams(
+                                    parent_handle=root_handle,
+                                    new_class=unreal.StaticMeshComponent,
+                                    blueprint_context=bp,
+                                    conform_transform_to_parent=False,
+                                    skip_mark_blueprint_modified=False
+                                )
+                                sub_handle, fail_reason = subsystem.add_new_subobject(params=params)
+                            except Exception:
+                                # fallback: older signature
+                                sub_handle, fail_reason = subsystem.add_new_subobject(
+                                    parent_handle=root_handle,
+                                    new_class=unreal.StaticMeshComponent,
+                                    blueprint_context=bp
+                                )
 
-                    # Collision preset from dropdown
-                    selected_preset = self.collision_combo.currentText()
-                    component.set_editor_property("collision_profile_name", unreal.Name(selected_preset))
+                            # Check fail_reason if present
+                            if hasattr(fail_reason, "is_empty"):
+                                if not fail_reason.is_empty():
+                                    unreal.log_warning(f"Failed to add subobject to {bp.get_name()}: {fail_reason}")
+                                    raise RuntimeError("add_failed")
+                            elif fail_reason:
+                                unreal.log_warning(f"Failed to add subobject to {bp.get_name()}: {fail_reason}")
+                                raise RuntimeError("add_failed")
 
-                unreal.EditorAssetLibrary.save_loaded_asset(bp)
-                unreal.log(f"✅ Created Blueprint '{bp.get_name()}' with preset '{self.collision_combo.currentText()}'")
+                            # Rename the created subobject
+                            try:
+                                subsystem.rename_subobject(handle=sub_handle, new_name=unreal.Text(asset.get_name() + "_SM"))
+                            except Exception:
+                                # some engine builds use a string parameter rename method
+                                try:
+                                    subsystem.rename_subobject(handle=sub_handle, new_name=asset.get_name() + "_SM")
+                                except Exception:
+                                    pass
+
+                            # Attach to root (best-effort)
+                            try:
+                                attached = subsystem.attach_subobject(owner_handle=root_handle, child_to_add_handle=sub_handle)
+                                if attached is False:
+                                    # log but continue
+                                    unreal.log_warning(f"attach_subobject returned False for {bp.get_name()}")
+                            except Exception:
+                                # Some engine builds may have different method name
+                                pass
+
+                            # Resolve the actual UObject for the created subobject
+                            data = BFL.get_data(sub_handle)
+                            comp_obj = BFL.get_object(data)
+                            if not comp_obj:
+                                unreal.log_warning(f"Could not resolve created subobject to object for {bp.get_name()}")
+                                raise RuntimeError("resolve_failed")
+
+                            # Set the static mesh on the component
+                            comp_obj.set_editor_property("static_mesh", asset)
+
+                            # Apply UI toggles to component object
+                            if hasattr(comp_obj, "enable_gravity"):
+                                comp_obj.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
+                            if hasattr(comp_obj, "generate_overlap_events"):
+                                comp_obj.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
+                            if hasattr(comp_obj, "use_continuous_collision_detection"):
+                                comp_obj.set_editor_property("use_continuous_collision_detection", self.ccd_cb.isChecked())
+                            if hasattr(comp_obj, "collision_complexity"):
+                                if self.complex_simple_cb.isChecked():
+                                    comp_obj.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
+                                else:
+                                    comp_obj.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+                            selected_preset = self.collision_combo.currentText()
+                            comp_obj.set_editor_property("collision_profile_name", unreal.Name(selected_preset))
+
+                            # Save blueprint after changes
+                            bp.modify(True)
+                            unreal.EditorAssetLibrary.save_loaded_asset(bp)
+                            unreal.log(f"✅ Added StaticMeshComponent '{asset.get_name()}' to Blueprint '{bp.get_name()}' (subsystem)")
+                            # Success; continue to next asset
+                            continue
+
+                        except Exception as sub_err:
+                            # Subsystem attempt failed — fall back to SCS method below
+                            unreal.log_warning(f"Subobject subsystem path failed for {bp.get_name()}: {sub_err}")
+                            # do not continue; go to fallback SCS
+                    else:
+                        unreal.log("SubobjectDataSubsystem not available; falling back to SCS approach.")
+
+                except Exception as e_sub_top:
+                    unreal.log_warning(f"Subobject attempt top-level error for {bp.get_name()}: {e_sub_top}")
+                    # fall through to SCS below
+
+                # === Fallback: Simple Construction Script approach ===
+                try:
+                    # Load blueprint asset (ensure loaded)
+                    bp_path = bp.get_path_name()
+                    loaded_bp = unreal.EditorAssetLibrary.load_asset(bp_path)
+                    # Try property names commonly present in different builds
+                    scs = None
+                    # Try lower-case property (some builds expose property)
+                    try:
+                        scs = loaded_bp.get_editor_property("simple_construction_script")
+                    except Exception:
+                        scs = None
+                    # Try capitalized property (some other builds)
+                    if not scs:
+                        try:
+                            scs = loaded_bp.get_editor_property("SimpleConstructionScript")
+                        except Exception:
+                            scs = None
+
+                    if not scs:
+                        unreal.log_warning(f"{bp.get_name()} has no accessible SCS; cannot attach StaticMeshComponent via fallback.")
+                        continue
+
+                    new_node = scs.create_node(unreal.StaticMeshComponent, asset.get_name() + "_SM")
+                    new_node.set_editor_property("static_mesh", asset)
+
+                    root_nodes = scs.get_root_nodes()
+                    if root_nodes:
+                        new_node.attach_to(root_nodes[0])
+                    else:
+                        scs.add_node(new_node)
+
+                    # If possible, update the component template properties
+                    try:
+                        template = new_node.get_component_template()
+                        if template:
+                            if hasattr(template, "enable_gravity"):
+                                template.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
+                            if hasattr(template, "generate_overlap_events"):
+                                template.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
+                            if hasattr(template, "use_continuous_collision_detection"):
+                                template.set_editor_property("use_continuous_collision_detection", self.ccd_cb.isChecked())
+                            if hasattr(template, "collision_complexity"):
+                                if self.complex_simple_cb.isChecked():
+                                    template.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
+                                else:
+                                    template.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+                            selected_preset = self.collision_combo.currentText()
+                            template.set_editor_property("collision_profile_name", unreal.Name(selected_preset))
+                    except Exception:
+                        pass
+
+                    loaded_bp.modify(True)
+                    unreal.EditorAssetLibrary.save_loaded_asset(loaded_bp)
+                    unreal.log(f"✅ Added StaticMeshComponent '{asset.get_name()}' to Blueprint '{bp.get_name()}' (SCS fallback)")
+
+                except Exception as scs_err:
+                    unreal.log_warning(f"Fallback SCS approach failed for {bp.get_name()}: {scs_err}")
+                    continue
 
             except Exception as e:
                 unreal.log_warning(f"Error creating BP for {asset.get_name()}: {e}")

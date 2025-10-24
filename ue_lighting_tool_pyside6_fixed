@@ -1,0 +1,163 @@
+"""
+UE5 Lighting Tool (Python + PySide6)
+Target: Unreal Engine 5.6 Editor Python environment.
+
+Simplified version:
+- Controls RGB color of SkyLight and DirectionalLight
+- Controls Atmosphere/Fog density (ExponentialHeightFog)
+- Controls sun position (DirectionalLight rotation)
+
+How to run:
+1) Enable 'Editor Scripting Utilities' and 'Python Editor Script Plugin' in Unreal.
+2) Run this script in the Python console.
+3) Requires PySide6 (included with Unreal 5.6 Python runtime).
+"""
+
+import unreal
+from PySide6 import QtWidgets, QtCore
+
+# ---------------- Helper Functions ----------------
+
+def log(msg):
+    unreal.log(f"[LightingTool] {msg}")
+
+def find_actor_by_class_partial(name_substring):
+    for actor in unreal.EditorLevelLibrary.get_all_level_actors():
+        if name_substring.lower() in actor.get_class().get_name().lower():
+            return actor
+    return None
+
+def safe_set_property(actor, prop, value):
+    try:
+        actor.set_editor_property(prop, value)
+    except Exception as e:
+        log(f"Failed to set {prop} on {actor.get_name()}: {e}")
+
+# ---------------- Scene Controller ----------------
+
+class SceneLightingController:
+    def __init__(self):
+        self.directional = find_actor_by_class_partial('directionallight')
+        self.skylight = find_actor_by_class_partial('skylight')
+        self.fog = find_actor_by_class_partial('exponentialheightfog')
+
+        log("Scene Lights:")
+        log(f"  Directional: {self.directional.get_name() if self.directional else 'None'}")
+        log(f"  Skylight: {self.skylight.get_name() if self.skylight else 'None'}")
+        log(f"  Fog: {self.fog.get_name() if self.fog else 'None'}")
+
+    def set_sky_color(self, r, g, b):
+        color = unreal.LinearColor(r, g, b, 1.0)
+        if self.skylight:
+            safe_set_property(self.skylight, 'light_color', color)
+        if self.directional:
+            safe_set_property(self.directional, 'light_color', color)
+
+    def set_fog_density(self, density):
+        if self.fog:
+            safe_set_property(self.fog, 'fog_density', float(density))
+
+    def set_sun_angle(self, value):
+        if self.directional:
+            rotation = unreal.Rotator(value, 0, 0)
+            try:
+                self.directional.set_actor_rotation(rotation, False)
+            except Exception as e:
+                log(f"Failed to set sun rotation: {e}")
+
+# ---------------- Qt UI ----------------
+
+class LightingTool(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("UE5 Lighting Tool")
+        self.setMinimumSize(350, 300)
+
+        self.scene = SceneLightingController()
+
+        layout = QtWidgets.QVBoxLayout()
+
+        # RGB Controls
+        rgb_group = QtWidgets.QGroupBox("Sky/Light Color")
+        rgb_layout = QtWidgets.QHBoxLayout()
+        self.r_slider = self._make_slider(0, 255, 255)
+        self.g_slider = self._make_slider(0, 255, 255)
+        self.b_slider = self._make_slider(0, 255, 255)
+        rgb_layout.addWidget(self._labeled_slider('R', self.r_slider))
+        rgb_layout.addWidget(self._labeled_slider('G', self.g_slider))
+        rgb_layout.addWidget(self._labeled_slider('B', self.b_slider))
+        rgb_group.setLayout(rgb_layout)
+
+        # Fog control
+        fog_group = QtWidgets.QGroupBox("Atmospherics (Fog Density)")
+        fog_layout = QtWidgets.QHBoxLayout()
+        self.fog_slider = self._make_slider(0, 100, 10)
+        fog_layout.addWidget(self._labeled_slider('Fog', self.fog_slider))
+        fog_group.setLayout(fog_layout)
+
+        # Sun rotation
+        sun_group = QtWidgets.QGroupBox("Sun Position (Rotation)")
+        sun_layout = QtWidgets.QHBoxLayout()
+        self.sun_slider = self._make_slider(-90, 90, 45)
+        sun_layout.addWidget(self._labeled_slider('Pitch', self.sun_slider))
+        sun_group.setLayout(sun_layout)
+
+        # Apply button
+        self.apply_button = QtWidgets.QPushButton("Apply Changes")
+
+        # Layout order
+        layout.addWidget(rgb_group)
+        layout.addWidget(fog_group)
+        layout.addWidget(sun_group)
+        layout.addWidget(self.apply_button)
+        self.setLayout(layout)
+
+        # Connect signals
+        self.r_slider.valueChanged.connect(self.update_scene)
+        self.g_slider.valueChanged.connect(self.update_scene)
+        self.b_slider.valueChanged.connect(self.update_scene)
+        self.fog_slider.valueChanged.connect(self.update_scene)
+        self.sun_slider.valueChanged.connect(self.update_scene)
+        self.apply_button.clicked.connect(self.update_scene)
+
+    def _make_slider(self, lo, hi, value):
+        slider = QtWidgets.QSlider(QtCore.Qt.Vertical)
+        slider.setMinimum(lo)
+        slider.setMaximum(hi)
+        slider.setValue(value)
+        slider.setTickPosition(QtWidgets.QSlider.TicksRight)
+        return slider
+
+    def _labeled_slider(self, text, slider):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        label = QtWidgets.QLabel(text)
+        label.setAlignment(QtCore.Qt.AlignHCenter)
+        layout.addWidget(label)
+        layout.addWidget(slider)
+        widget.setLayout(layout)
+        return widget
+
+    def update_scene(self):
+        r = self.r_slider.value() / 255.0
+        g = self.g_slider.value() / 255.0
+        b = self.b_slider.value() / 255.0
+        fog = self.fog_slider.value() / 100.0
+        sun_angle = self.sun_slider.value()
+
+        self.scene.set_sky_color(r, g, b)
+        self.scene.set_fog_density(fog)
+        self.scene.set_sun_angle(sun_angle)
+
+# ---------------- Run ----------------
+
+def show_lighting_tool():
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        app = QtWidgets.QApplication([])
+    tool = LightingTool()
+    tool.show()
+    return tool
+
+window_instance = show_lighting_tool()
+_GLOBAL_LIGHTING_TOOL_WINDOW = window_instance

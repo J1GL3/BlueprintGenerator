@@ -91,9 +91,10 @@ class BatchBlueprintCreator(QWidget):
             }
         """)
 
+        #creating the main layout and setting it to verticle 
         main_layout = QVBoxLayout(self)
 
-        # Header
+        #header
         header = QFrame()
         header.setObjectName("Header")
         header.setFixedHeight(100)
@@ -110,7 +111,8 @@ class BatchBlueprintCreator(QWidget):
         content.setSpacing(12)
 
         # Gravity
-        self.gravity_cb = self._add_option(content, "Enable Gravity")
+        #creatin the check box, defining where to put it and keeping a reference for it
+        self.gravity_checkbox = self._add_option(content, "Enable Gravity")
 
         # Collision Settings
         collision_box = CollapsibleBox("Collision settings")
@@ -206,92 +208,9 @@ class BatchBlueprintCreator(QWidget):
                     unreal.log_warning(f"Skipping {asset.get_name()} (not a StaticMesh).")
                     continue
 
-                # Create blueprint using the working SCS method
-                self.create_blueprint_with_scs(asset)
-
             except Exception as e:
                 unreal.log_warning(f"⚠️ Error creating BP for {asset.get_name()}: {e}")
 
-    def create_blueprint_with_scs(self, static_mesh):
-        """Create blueprint with static mesh using SCS (Simple Construction Script)"""
-        try:
-            bp_name = f"{static_mesh.get_name()}_BP"
-            
-            # Create unique asset name
-            tools = unreal.AssetToolsHelpers.get_asset_tools()
-            unique_name = tools.create_unique_asset_name(f"{DESTINATION_FOLDER}/{bp_name}", "")
-            bp_name = unique_name[1] if isinstance(unique_name, (list, tuple)) else unique_name
-
-            # Create Blueprint Actor asset
-            factory = unreal.BlueprintFactory()
-            factory.set_editor_property("ParentClass", unreal.Actor)
-            blueprint = tools.create_asset(bp_name, DESTINATION_FOLDER, unreal.Blueprint, factory)
-            
-            if not blueprint:
-                unreal.log_warning(f"❌ Failed to create blueprint for {static_mesh.get_name()}")
-                return
-
-            # Access the Simple Construction Script (SCS)
-            skeleton = blueprint.simple_construction_script
-            
-            # Get root nodes
-            root_nodes = skeleton.get_root_nodes()
-            if not root_nodes:
-                unreal.log_warning("No root nodes found in the Blueprint's SCS")
-                return
-            
-            root_node = root_nodes[0]
-
-            # Add StaticMeshComponent node
-            component_name = f"{static_mesh.get_name()}_Mesh"
-            smc_node = skeleton.create_node(unreal.StaticMeshComponent, component_name)
-            
-            if not smc_node:
-                unreal.log_warning("Failed to create StaticMeshComponent node")
-                return
-
-            # Attach to root node
-            smc_node.attach_to(root_node)
-            skeleton.add_node(smc_node)
-
-            # Get the component template to set its properties
-            smc_template = smc_node.component_template
-            if smc_template:
-                # Set the static mesh
-                smc_template.set_editor_property("StaticMesh", static_mesh)
-                
-                # Apply physics settings
-                smc_template.set_editor_property("bEnableGravity", self.gravity_cb.isChecked())
-                smc_template.set_editor_property("bGenerateOverlapEvents", self.gen_overlap_cb.isChecked())
-                smc_template.set_editor_property("bUseCCD", self.ccd_cb.isChecked())
-
-                # Apply collision settings
-                if self.simple_collision_cb.isChecked():
-                    smc_template.set_editor_property("CollisionComplexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
-                else:
-                    smc_template.set_editor_property("CollisionComplexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
-
-                # Apply collision preset
-                preset = self.collision_combo.currentText()
-                smc_template.set_editor_property("CollisionProfileName", unreal.Name(preset))
-                
-                unreal.log(f"✅ Successfully set static mesh and properties for {component_name}")
-            else:
-                unreal.log_warning("Failed to get Static Mesh Component template from node")
-                return
-
-            # Save and compile Blueprint
-            unreal.EditorAssetLibrary.save_loaded_asset(blueprint)
-            blueprint.mark_package_dirty()
-            
-            # Open in editor
-            editor_subsystem = unreal.get_editor_subsystem(unreal.AssetEditorSubsystem)
-            editor_subsystem.open_editor_for_assets([blueprint])
-            
-            unreal.log(f"✅ Successfully created blueprint with static mesh: {blueprint.get_name()}")
-
-        except Exception as e:
-            unreal.log_warning(f"❌ Error creating blueprint: {e}")
 
 
 # ---------------- Launcher ---------------- #
