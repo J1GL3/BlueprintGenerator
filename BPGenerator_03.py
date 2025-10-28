@@ -1,20 +1,26 @@
 import unreal
 import sys
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout,
     QCheckBox, QFrame, QSpacerItem, QSizePolicy, QGroupBox, QToolButton, QComboBox
 )
 
-DESTINATION_FOLDER = "/Game/GeneratedBlueprints"
-WINDOW_WIDTH = 450
-WINDOW_HEIGHT = 700
+DestinationFolder = "/Game/GeneratedBlueprints"
+WindowWidth = 450
+WindowHeight = 450
 
-# Ensure destination folder exists
-if not unreal.EditorAssetLibrary.does_directory_exist(DESTINATION_FOLDER):
-    unreal.EditorAssetLibrary.make_directory(DESTINATION_FOLDER)
+# Ensure folder exists ------------------------------------------------------
+if not unreal.EditorAssetLibrary.does_directory_exist(DestinationFolder):
+    unreal.EditorAssetLibrary.make_directory(DestinationFolder)
+    print ("GeneratedBlueprints, folder created")
+# If not print, already exists ----------------------------------------------
+else:
+    print ("GeneratedBlueprints, folder already exists")
 
-# ---------------- Collapsible Section ---------------- #
+
+
+# Collapsible section ------------------------------------------------
 class CollapsibleBox(QGroupBox):
     def __init__(self, title="", parent=None):
         super().__init__(parent)
@@ -22,7 +28,16 @@ class CollapsibleBox(QGroupBox):
         self.toggle_button = QToolButton(text=title, checkable=True, checked=False)
         self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.toggle_button.setArrowType(Qt.RightArrow)
-        self.toggle_button.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
+        # Button Border ----------------------------------
+        self.toggle_button.setStyleSheet("""
+            QToolButton {
+                border: 1px solid #808080;
+                border-radius: 4px;
+                padding: 4px;
+                font-weight: bold;
+            }
+        """)
+        # creates buttons, drop downs and layouts for buttons 
         self.toggle_button.toggled.connect(self.on_toggled)
         self.content = QWidget()
         self.content.setVisible(False)
@@ -33,32 +48,35 @@ class CollapsibleBox(QGroupBox):
         layout.addLayout(header)
         layout.addWidget(self.content)
 
+    #setting drop down section visible on toggled -----------
     def on_toggled(self, checked):
         self.toggle_button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self.content.setVisible(checked)
 
 
-# ---------------- Main Window ---------------- #
+# Main Window --------------------------------------------------------
 class BatchBlueprintCreator(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(QSize(WINDOW_WIDTH, WINDOW_HEIGHT))
+        self.setFixedSize(QSize(WindowWidth, WindowHeight))
         self.setWindowTitle("Blueprint Generator")
         self.setObjectName("ToolWindow")
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
 
         self.setStyleSheet("""
             QWidget {
-                background: #f0f1f2;
+                background: #e7ecef;
                 font-family: "Courier New", monospace;
                 font-size: 13px;
             }
             #Header {
-                background: #6ea6e6;
-                color: #0b2540;
+                background-color: #6096ba;
+                border: none;
                 border-bottom: 2px solid #0b2540;
             }
             QLabel.title {
-                font-size: 24px;
+                font-size: 30px;
                 font-weight: 900;
             }
             QLabel.option {
@@ -72,45 +90,95 @@ class BatchBlueprintCreator(QWidget):
                 border-radius: 8px;
             }
             QPushButton.generate:pressed {
-                background: #08304a;
+                background: #6096ba;
             }
             QGroupBox { border: none; }
+            
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border: 2px solid #0b2540;
+                border-radius: 3px;
+                background: white;
+            }
+            QCheckBox::indicator:checked {
+                background: #6096ba;
+                border: 2px solid #0b2540;
+            }
         """)
 
+        #creating main layout and setting it to verticle 
+        #applying it to the main window as it refers it "self"
         main_layout = QVBoxLayout(self)
-        # Header
+
+
+
+
+
+        #header --------------------------------------------------------------------------------------
+        #creating the rectangular header frame
         header = QFrame()
-        header.setObjectName("Header")
         header.setFixedHeight(100)
-        hl = QVBoxLayout(header)
-        t = QLabel("Batch Blueprint\nCreator")
-        t.setProperty("class", "title")
-        t.setAlignment(Qt.AlignCenter)
-        hl.addWidget(t)
+        #making the header title go in a verticle way
+        header_layout = QVBoxLayout(header)
+        title = QLabel("Batch Blueprint Creator")
+        #creating a class for the title so I can refer back to it when creating buttons
+        title.setProperty("class", "title")
+        #centers the text
+        title.setAlignment(Qt.AlignCenter)
+        #putting the title inside the header
+        header_layout.addWidget(title)
+        #add the header and everything inside it to the main window
         main_layout.addWidget(header)
 
-        # Content
+
+
+
+        #content layout -----------------------------------------------------------------------------
+        #creating a verticle layout
         content = QVBoxLayout()
-        content.setContentsMargins(24, 16, 24, 16)
+        #creating empty space to leave betwen the edges of the contianer and the widgets
+        content.setContentsMargins(16, 24, 16, 24)
+        #setting the space between each widget inside
         content.setSpacing(12)
 
-        # ---- Gravity ----
-        self.gravity_cb = self._add_option(content, "Gravity")
 
-        # ---- Collision settings ----
+        
+
+        #Gravity Button -----------------------------------------------------------------------------
+        #creatin the check box, defining where to put it and keeping a reference for it
+        self.gravity_checkbox = self._add_option(content, "Enable Gravity")
+
+
+
+
+        #collision settings Box -------------------------------------------------------------------------
+        #calling the defined "CollapsableBox" and giving it a title
         collision_box = CollapsibleBox("Collision settings")
+        #creating a new verticle layout for new widgets
         inner = QVBoxLayout()
+        #sets the verticle spacing of these new widgets
         inner.setSpacing(6)
-        self.complex_simple_cb = self._add_option(inner, "Simple or Complex as Simple", inside=True)
-        self.gen_overlap_cb = self._add_option(inner, "Generate overlap events", inside=True)
+        #creating 2 buttons and specifiying to put them in the inner layout
+        self.simple_collision_checkbox = self._add_option(inner, "Simple or Complex as Simple", inside=True)
+        self.gen_overlap_checkbox = self._add_option(inner, "Generate overlap events", inside=True)
 
-        # --- Collision Preset Dropdown ---
+
+
+
+        #collision preset dropdown ----------------------------------------------------------------------
+        #creating a horizontal layout so the drop down is next to the title
         row = QHBoxLayout()
-        label = QLabel("Collision preset")
-        label.setProperty("class", "option")
-        self.collision_combo = QComboBox()
-        self.collision_combo.setFixedWidth(180)
-        self.collision_combo.addItems([
+        #creating a title
+        label = QLabel("Collision Presets")
+        #creating a class name for the style sheet so we can style all options in the same way
+        label.setProperty("classs","option")
+        #creating a variable inside this class that makes a drop down menu widget
+        self.collision_drop = QComboBox()
+        #limiting its width
+        self.collision_drop.setFixedWidth(180)
+        #filling the dropdown with all the options
+        self.collision_drop.addItems([
             "BlockAll",
             "BlockAllDynamic",
             "OverlapAll",
@@ -121,262 +189,224 @@ class BatchBlueprintCreator(QWidget):
             "Spectator",
             "Custom"
         ])
+        #putting the title to the left
         row.addWidget(label)
+        #stretching the row so the drop down is on the far right
         row.addStretch()
-        row.addWidget(self.collision_combo)
-        row.setContentsMargins(20, 0, 0, 0)
+        #adding the dropdown itself to the row
+        row.addWidget(self.collision_drop)
+        #movong this row to the inner part of the Collision settings
         inner.addLayout(row)
-
+        #moving the inner part into the content area 
         collision_box.content.setLayout(inner)
+        #adding the collapsable "Collision Settings" into the main paige
         content.addWidget(collision_box)
 
-        # ---- CCD ----
-        self.ccd_cb = self._add_option(content, "Continuous Collision Detection (CCD)")
 
-        # Spacer
+
+
+
+        #CCD ------------------------------------------------------------------------------------------
+        #adding in a check box for CCD, asigning it to the content part and keeping a reference for it
+        self.ccd_checkbox = self._add_option(content, "Continuous Collision Detection")
+
+
+
+
+
+        #Spacer ---------------------------------------------------------------------------------------- 
+        #forcing the UI to the top by making an invisible flexible spacer to the bottom it
         content.addItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        # Info + Generate button
-        self.info_label = QLabel("Selected assets: 0")
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self.info_label)
-        btn_row.addStretch()
-        self.generate_btn = QPushButton("Generate Blueprints")
-        self.generate_btn.setProperty("class", "generate")
-        self.generate_btn.setFixedWidth(180)
-        self.generate_btn.clicked.connect(self.on_generate)
-        btn_row.addWidget(self.generate_btn)
-        content.addLayout(btn_row)
 
+
+
+        #selected assets and Generate -----------------------------------------------------------------------------
+        #creating a label for the selected assets and sotring it for later use/ updateabilty
+        self.selected_assets = QLabel("Selected Assets")
+        #creating a layout for the buttons at the bottom
+        bottom_button_row = QHBoxLayout()
+        #adds the selected assets label to the left of the row
+        bottom_button_row.addWidget(self.selected_assets)
+        #adding in space to push the generate button to the right
+        bottom_button_row.addStretch()
+        #creating a button, giving it a label and referencing it
+        self.generate_button = QPushButton("Generate Blueprints")
+        #gives it the QT style sheet class and labels it "generate" to style later
+        self.generate_button.setProperty("class", "generate")
+        # setting the width of the button for consistancy
+        self.generate_button.setFixedWidth(180)
+        #maikling it so when the button is clicked it calls the function "on generate"
+        self.generate_button.clicked.connect(self.on_generate)
+        #adding the button to the layout
+        bottom_button_row.addWidget(self.generate_button)
+        #adding the bottom button row to the content section and automatically puts it at the bottom
+        content.addLayout(bottom_button_row)
+        
+
+
+
+        #putting everything we have so far into the main layout ---------------------------------------------------
         main_layout.addLayout(content)
-        self.update_selected_count()
 
-    # ------------- Helper for making labeled checkbox rows ------------- #
+
+
+
+        #live selected count -------------------------------------------------------------------------------------
+        #creating a variable to remember last number of selected assets to detect if anything has changed
+        self._last_asset_count = 0
+        #creating a timer
+        self.timer = QTimer()
+        #conection the timers timeout signal to the "update_selected_count" function
+        self.timer.timeout.connect(self.update_selected_count)
+        #setting it so the timer starts every 0.5 seconds
+        self.timer.start(500)
+
+
+
+
+        #loop to uncheck boxes -----------------------------------------------------------------------------------
+        for cb in [self.gravity_checkbox, self.simple_collision_checkbox, self.gen_overlap_checkbox, self.ccd_checkbox]:
+            #make sure unchecked
+            cb.setCheckState(Qt.Unchecked)
+
+
+
+
+    #creating a private function that takes 4 arguments self, parent_layout, text, inside ------------------------
+    #self - the instance of the class
+    #parent_layout - the layout this row should be added to
+    #text - the text for the label
+    #inside - optional flag that controls whether the row should be indented slightly
     def _add_option(self, parent_layout, text, inside=False):
+        #creating a horizontal row layout
         row = QHBoxLayout()
+        #makes a text label using whatever text is passed in e.g (Enable Gravity, Collision settings)
         label = QLabel(text)
+        #gives the QSS class name "option" for reference later
         label.setProperty("class", "option")
+        #creating the checkbox widget
         checkbox = QCheckBox()
+        #determining their position.
+        #adding the label to the left of the row
+        #stretching the space to push the check box to the right 
+        #adding in the check box
         row.addWidget(label)
         row.addStretch()
         row.addWidget(checkbox)
+        #if it is inside a collapsable box it will indent the row a bit so it alligns nicer 
         if inside:
             row.setContentsMargins(20, 0, 0, 0)
+        #adds the horizontal row (the label and the check box) into the verticle row it belongs to   
         parent_layout.addLayout(row)
+        #returning the checkbox object
         return checkbox
+    
 
+
+
+    #creating the function to call every 0.5 seconds to check for selceted assets ----------------------------
     def update_selected_count(self):
+        #get all asset objects that are selected by calling UE's Python API
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
-        self.info_label.setText(f"Selected assets: {len(assets)}")
+        #counting how many were slected and returns the length of a list in python
+        count = len(assets)
+        #check if number of selected assets has changed
+        if count != self._last_asset_count:
+            #updates stored count to new count
+            self._last_asset_count = count
+            #updates the label at the bottom of the UI so the user can see
+            self.selected_assets.setText(f"Selected assets: {count}")    
 
-    # ------------- Main logic (UE5.6 Fixed, robust) ------------- #
+        
+
+
+    #creating the function that runs when we click "generate blueprints" -------------------------------------
     def on_generate(self):
+        #get all asset objects that are selected by calling UE's Python API
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
-        self.update_selected_count()
+        #if list is empty it returns a warning and stops running
         if not assets:
-            unreal.log_warning("No assets selected.")
+            unreal.log_warning("WARNING, No assets selected.")
             return
 
-        unreal.log(f"Generating blueprints for {len(assets)} assets.")
-        tools = unreal.AssetToolsHelpers.get_asset_tools()
+        #logs how many assets are selected
+        unreal.log(f"Generating blueprints for {len(assets)} assets...")
+        
 
+        asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
+        #creating a loop to itterate through each individual asset
         for asset in assets:
+            #checking if the selected asset is a static mesh if not it jsut skips it doesnt break
             try:
-                base_name = asset.get_name() + "_BP"
-                unique_name = tools.create_unique_asset_name(f"{DESTINATION_FOLDER}/{base_name}", "")
-                bp_name = unique_name[1] if isinstance(unique_name, (list, tuple)) else unique_name
-                factory = unreal.BlueprintFactory()
-                factory.set_editor_property("ParentClass", unreal.Actor)
-                bp = tools.create_asset(bp_name, DESTINATION_FOLDER, unreal.Blueprint, factory)
-                if not bp:
-                    unreal.log_warning(f"Failed to create blueprint for {asset.get_name()}")
+                if not isinstance(asset, unreal.StaticMesh):
+                    unreal.log_warning(f"Skipping {asset.get_name()} (not a StaticMesh).")
                     continue
 
-                # === Attempt 1: Use SubobjectDataSubsystem (editor's Add Component flow) ===
-                try:
-                    subsystem = None
-                    try:
-                        subsystem = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
-                    except Exception:
-                        subsystem = None
+                def makeGeneratedDynamicMeshBlueprint():
+                    factory = unreal.BlueprintFactory()
+                    factory.set_editor_property("ParentClass", unreal.GeneratedDynamicMeshActor)
+                    assetTools = unreal.AssetToolsHelpers.get_asset_tools()
+                    newBlueprint = assetTools.create_asset("MyNewBlueprint", "/Game/MyContent", None, factory)
+                    unreal.EditorAssetLibrary.save_loaded_asset(newBlueprint)
+                    return newBlueprint
 
-                    if subsystem:
-                        try:
-                            BFL = unreal.SubobjectDataBlueprintFunctionLibrary
+                def addSubobjectToBleuprint(bp):
 
-                            # Gather root subobject data handles for this blueprint
-                            handles = subsystem.k2_gather_subobject_data_for_blueprint(context=bp)
-                            if not handles:
-                                unreal.log_warning(f"Could not gather root subobject data for {bp.get_name()}")
-                                # fallthrough to SCS approach below
-                                raise RuntimeError("no_handles")
+                    
+                    # get the subobjet data system - the object in charge of creating components (subobjects)
+                    subsystem = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
 
-                            root_handle = handles[0]
-                            # Prepare AddNewSubobjectParams. If AddNewSubobjectParams is not available, construct via kwargs
-                            try:
-                                params = unreal.AddNewSubobjectParams(
-                                    parent_handle=root_handle,
-                                    new_class=unreal.StaticMeshComponent,
-                                    blueprint_context=bp,
-                                    conform_transform_to_parent=False,
-                                    skip_mark_blueprint_modified=False
-                                )
-                                sub_handle, fail_reason = subsystem.add_new_subobject(params=params)
-                            except Exception:
-                                # fallback: older signature
-                                sub_handle, fail_reason = subsystem.add_new_subobject(
-                                    parent_handle=root_handle,
-                                    new_class=unreal.StaticMeshComponent,
-                                    blueprint_context=bp
-                                )
+                    # get a handle for the 'root' of the bp, this will be what we parent our component to
+                    rootDataHandle = subsystem.k2_gather_subobject_data_for_blueprint(bp)[0]
 
-                            # Check fail_reason if present
-                            if hasattr(fail_reason, "is_empty"):
-                                if not fail_reason.is_empty():
-                                    unreal.log_warning(f"Failed to add subobject to {bp.get_name()}: {fail_reason}")
-                                    raise RuntimeError("add_failed")
-                            elif fail_reason:
-                                unreal.log_warning(f"Failed to add subobject to {bp.get_name()}: {fail_reason}")
-                                raise RuntimeError("add_failed")
+                    # class of the newly created component
+                    className = unreal.SplineComponent
 
-                            # Rename the created subobject
-                            try:
-                                subsystem.rename_subobject(handle=sub_handle, new_name=unreal.Text(asset.get_name() + "_SM"))
-                            except Exception:
-                                # some engine builds use a string parameter rename method
-                                try:
-                                    subsystem.rename_subobject(handle=sub_handle, new_name=asset.get_name() + "_SM")
-                                except Exception:
-                                    pass
+                    # create the new component (subobject) 
+                    splineHandle, failReason =subsystem.add_new_subobject(unreal.AddNewSubobjectParams(
+                        rootDataHandle, 
+                        className,
+                        bp
+                    ))
 
-                            # Attach to root (best-effort)
-                            try:
-                                attached = subsystem.attach_subobject(owner_handle=root_handle, child_to_add_handle=sub_handle)
-                                if attached is False:
-                                    # log but continue
-                                    unreal.log_warning(f"attach_subobject returned False for {bp.get_name()}")
-                            except Exception:
-                                # Some engine builds may have different method name
-                                pass
+                    # using the returned 'handle', use the SubobjectDatasubSystem to rename the new component 
+                    name = unreal.Text("MySpline")
+                    subsystem.rename_subobject(splineHandle, name)
 
-                            # Resolve the actual UObject for the created subobject
-                            data = BFL.get_data(sub_handle)
-                            comp_obj = BFL.get_object(data)
-                            if not comp_obj:
-                                unreal.log_warning(f"Could not resolve created subobject to object for {bp.get_name()}")
-                                raise RuntimeError("resolve_failed")
 
-                            # Set the static mesh on the component
-                            comp_obj.set_editor_property("static_mesh", asset)
+                    BFL = unreal.SubobjectDataBlueprintFunctionLibrary
+                    splineObj = BFL.get_object(BFL.get_data(splineHandle))
 
-                            # Apply UI toggles to component object
-                            if hasattr(comp_obj, "enable_gravity"):
-                                comp_obj.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
-                            if hasattr(comp_obj, "generate_overlap_events"):
-                                comp_obj.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
-                            if hasattr(comp_obj, "use_continuous_collision_detection"):
-                                comp_obj.set_editor_property("use_continuous_collision_detection", self.ccd_cb.isChecked())
-                            if hasattr(comp_obj, "collision_complexity"):
-                                if self.complex_simple_cb.isChecked():
-                                    comp_obj.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
-                                else:
-                                    comp_obj.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
-                            selected_preset = self.collision_combo.currentText()
-                            comp_obj.set_editor_property("collision_profile_name", unreal.Name(selected_preset))
+                    return splineHandle, splineObj
 
-                            # Save blueprint after changes
-                            bp.modify(True)
-                            unreal.EditorAssetLibrary.save_loaded_asset(bp)
-                            unreal.log(f"✅ Added StaticMeshComponent '{asset.get_name()}' to Blueprint '{bp.get_name()}' (subsystem)")
-                            # Success; continue to next asset
-                            continue
 
-                        except Exception as sub_err:
-                            # Subsystem attempt failed — fall back to SCS method below
-                            unreal.log_warning(f"Subobject subsystem path failed for {bp.get_name()}: {sub_err}")
-                            # do not continue; go to fallback SCS
-                    else:
-                        unreal.log("SubobjectDataSubsystem not available; falling back to SCS approach.")
-
-                except Exception as e_sub_top:
-                    unreal.log_warning(f"Subobject attempt top-level error for {bp.get_name()}: {e_sub_top}")
-                    # fall through to SCS below
-
-                # === Fallback: Simple Construction Script approach ===
-                try:
-                    # Load blueprint asset (ensure loaded)
-                    bp_path = bp.get_path_name()
-                    loaded_bp = unreal.EditorAssetLibrary.load_asset(bp_path)
-                    # Try property names commonly present in different builds
-                    scs = None
-                    # Try lower-case property (some builds expose property)
-                    try:
-                        scs = loaded_bp.get_editor_property("simple_construction_script")
-                    except Exception:
-                        scs = None
-                    # Try capitalized property (some other builds)
-                    if not scs:
-                        try:
-                            scs = loaded_bp.get_editor_property("SimpleConstructionScript")
-                        except Exception:
-                            scs = None
-
-                    if not scs:
-                        unreal.log_warning(f"{bp.get_name()} has no accessible SCS; cannot attach StaticMeshComponent via fallback.")
-                        continue
-
-                    new_node = scs.create_node(unreal.StaticMeshComponent, asset.get_name() + "_SM")
-                    new_node.set_editor_property("static_mesh", asset)
-
-                    root_nodes = scs.get_root_nodes()
-                    if root_nodes:
-                        new_node.attach_to(root_nodes[0])
-                    else:
-                        scs.add_node(new_node)
-
-                    # If possible, update the component template properties
-                    try:
-                        template = new_node.get_component_template()
-                        if template:
-                            if hasattr(template, "enable_gravity"):
-                                template.set_editor_property("enable_gravity", self.gravity_cb.isChecked())
-                            if hasattr(template, "generate_overlap_events"):
-                                template.set_editor_property("generate_overlap_events", self.gen_overlap_cb.isChecked())
-                            if hasattr(template, "use_continuous_collision_detection"):
-                                template.set_editor_property("use_continuous_collision_detection", self.ccd_cb.isChecked())
-                            if hasattr(template, "collision_complexity"):
-                                if self.complex_simple_cb.isChecked():
-                                    template.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_SIMPLE_AS_COMPLEX)
-                                else:
-                                    template.set_editor_property("collision_complexity", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
-                            selected_preset = self.collision_combo.currentText()
-                            template.set_editor_property("collision_profile_name", unreal.Name(selected_preset))
-                    except Exception:
-                        pass
-
-                    loaded_bp.modify(True)
-                    unreal.EditorAssetLibrary.save_loaded_asset(loaded_bp)
-                    unreal.log(f"✅ Added StaticMeshComponent '{asset.get_name()}' to Blueprint '{bp.get_name()}' (SCS fallback)")
-
-                except Exception as scs_err:
-                    unreal.log_warning(f"Fallback SCS approach failed for {bp.get_name()}: {scs_err}")
-                    continue
+                bp = makeGeneratedDynamicMeshBlueprint()
+                unreal.log(addSubobjectToBleuprint(bp))
+                # if you re-run this, remember to delete the previous bp otherwise this won't work
 
             except Exception as e:
                 unreal.log_warning(f"Error creating BP for {asset.get_name()}: {e}")
+        
 
-        self.update_selected_count()
 
 
-# ---------------- Launcher (UE5.6 Safe) ---------------- #
+
+#Launcher ----------------------------------------------------------------------------------------------------------------------
+#making sure the window stays open and python doesnt close the window 
 _global_window_ref = None
 
+#creating a function that launches the tools window
 def launch_window():
+    #making sure we are modifying the correct variable not a new local one
     global _global_window_ref
+    #checking if there is a "QApplication" already running
     app = QApplication.instance()
+    #if it isnt it creates a new one
     if not app:
         app = QApplication(sys.argv)
 
+    #checks if any instance of the tool is already open and if so it deletes/closes it
     for win in QApplication.allWindows():
         if isinstance(win, QWidget) and win.objectName() == "ToolWindow":
             try:
@@ -385,20 +415,28 @@ def launch_window():
             except:
                 pass
 
+    #create and show the new window
+    #creating an instance of the tool UI
     window = BatchBlueprintCreator()
-    window.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+    #actually displaying it
     window.show()
+    #bringing it to the front
     window.raise_()
+    #making sure it gets focused
     window.activateWindow()
 
+    #parent the tool to unreals editor
     try:
         unreal.parent_external_window_to_slate(window.winId())
+        #if it doesnt work it outputs an error
     except Exception as e:
         unreal.log_warning(f"Could not parent to slate: {e}")
 
+    #making sure it doesnt get garbageed by python
     _global_window_ref = window
-    unreal.log("✅ Batch Blueprint Creator running (UE5.6 safe).")
+    #writes a message to output log so its clear it ran successfully
+    unreal.log("YAY!!! Batch Blueprint Creator running.")
 
-
+#run the script
 if __name__ == "__main__":
     launch_window()

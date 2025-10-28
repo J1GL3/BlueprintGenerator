@@ -323,79 +323,85 @@ class BatchBlueprintCreator(QWidget):
 
     #creating the function that runs when we click "generate blueprints" -------------------------------------
     def on_generate(self):
-        #get all asset objects that are selected by calling UE's Python API
         assets = unreal.EditorUtilityLibrary.get_selected_assets()
-        #if list is empty it returns a warning and stops running
         if not assets:
-            unreal.log_warning("WARNING, No assets selected.")
+            unreal.log_warning("No assets selected.")
             return
 
-        #logs how many assets are selected
-        unreal.log(f"Generating blueprints for {len(assets)} assets...")
-        
+        unreal.log(f"Generating Blueprints for {len(assets)} selected static meshes...")
 
         asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
-        #creating a loop to itterate through each individual asset
+        editor_asset_lib = unreal.EditorAssetLibrary()
+        subsystem = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
+        bfl = unreal.SubobjectDataBlueprintFunctionLibrary
+
         for asset in assets:
-            #checking if the selected asset is a static mesh if not it jsut skips it doesnt break
             try:
                 if not isinstance(asset, unreal.StaticMesh):
                     unreal.log_warning(f"Skipping {asset.get_name()} (not a StaticMesh).")
                     continue
 
-                # Define asset name & path
-                bp_name = f"BP_{asset.get_name()}"
-                bp_path = f"{DestinationFolder}/{bp_name}"
+                bp_name = f"{asset.get_name()}_BP"
+                bp_path = DestinationFolder
+                full_path = f"{bp_path}/{bp_name}"
 
-                # Check if BP already exists
-                if unreal.EditorAssetLibrary.does_asset_exist(bp_path):
-                    unreal.log_warning(f"Blueprint {bp_name} already exists. Skipping.")
+                # --- Check if BP already exists ---
+                if editor_asset_lib.does_asset_exist(full_path):
+                    unreal.log_warning(f"{bp_name} already exists, loading existing Blueprint.")
+                    bp = editor_asset_lib.load_asset(full_path)
+                else:
+                    # ✅ Use Actor as base class for Blueprint
+                    factory = unreal.BlueprintFactory()
+                    factory.set_editor_property("ParentClass", unreal.Actor)
+
+                    # ✅ Use Blueprint class, not None
+                    bp = asset_tools.create_asset(
+                        asset_name=bp_name,
+                        package_path=bp_path,
+                        asset_class=unreal.Blueprint,
+                        factory=factory
+                    )
+
+                    if not bp:
+                        unreal.log_error(f"Failed to create Blueprint for {asset.get_name()}")
+                        continue
+
+                    unreal.log(f"Created new Blueprint: {bp_name}")
+
+                # --- Add Static Mesh Component ---
+                root_data_handles = subsystem.k2_gather_subobject_data_for_blueprint(bp)
+                if not root_data_handles:
+                    unreal.log_error(f"Failed to gather subobject data for {bp_name}")
                     continue
 
-                # Create the Blueprint asset
-                bp_factory = unreal.BlueprintFactory()
-                bp_factory.set_editor_property("ParentClass", unreal.Actor)
-                new_bp = asset_tools.create_asset(bp_name, DestinationFolder, unreal.Blueprint, bp_factory)
+                root_handle = root_data_handles[0]
 
-                if not new_bp:
-                    unreal.log_warning(f"❌ Failed to create Blueprint for {asset.get_name()}")
-                    continue
+                # ✅ Use StaticMeshComponent instead of Spline
+                add_params = unreal.AddNewSubobjectParams(root_handle, unreal.StaticMeshComponent, bp)
+                sm_handle, fail_reason = subsystem.add_new_subobject(add_params)
 
-                unreal.log(f"✅ Created empty Blueprint: {bp_name}")
-                
-                 # --- Add StaticMeshComponent using SubobjectDataSubsystem ---
-                subsystem = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
-                handles = subsystem.k2_gather_subobject_data_for_blueprint(context=new_bp)
-                if not handles:
-                    unreal.log_warning(f"Could not gather subobject data for {bp_name}")
-                    continue
-
-                root_handle = handles[0]  # Root is usually DefaultSceneRoot
-
-                params = unreal.AddNewSubobjectParams(
-                    parent_handle=root_handle,
-                    new_class=unreal.StaticMeshComponent,
-                    blueprint_context=new_bp
-                )
-
-                sub_handle, fail_reason = subsystem.add_new_subobject(params=params)
-                if fail_reason != unreal.AddNewSubobjectFailureReason.NONE:
-                    unreal.log_warning(f"❌ Failed to add StaticMeshComponent to {bp_name}: {fail_reason}")
+                if not sm_handle:
+                    unreal.log_error(f"Failed to add StaticMeshComponent to {bp_name}: {fail_reason}")
                     continue
 
                 # Rename component
-                subsystem.rename_subobject(handle=sub_handle, new_name=unreal.Text("StaticMeshComp"))
+                component_name = unreal.Text(f"{asset.get_name()}_Component")
+                subsystem.rename_subobject(sm_handle, component_name)
 
-                # --- Assign the StaticMesh to that component ---
-                static_mesh_comp = subsystem.get_object_from_handle(sub_handle)
-                static_mesh_comp.set_editor_property("StaticMesh", asset)
+                sm_obj = bfl.get_object(bfl.get_data(sm_handle))
+                sm_obj.set_editor_property("static_mesh", asset)
 
-                # --- Save the Blueprint ---
-                unreal.EditorAssetLibrary.save_loaded_asset(new_bp)
-                unreal.log(f"💾 Saved Blueprint: {bp_name}")
+                unreal.log(f"Assigned mesh '{asset.get_name()}' to component in {bp_name}")
+
+                # Save updated Blueprint
+                editor_asset_lib.save_loaded_asset(bp)
 
             except Exception as e:
-                unreal.log_warning(f"⚠️ Error creating BP for {asset.get_name()}: {e}")
+                unreal.log_error(f"❌ Error generating Blueprint for {asset.get_name()}: {e}")
+
+        unreal.log("✅ Blueprint generation completed.")
+
+
         
 
 
