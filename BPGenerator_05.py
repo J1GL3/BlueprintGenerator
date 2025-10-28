@@ -391,6 +391,27 @@ class BatchBlueprintCreator(QWidget):
                 sm_obj = bfl.get_object(bfl.get_data(sm_handle))
                 sm_obj.set_editor_property("static_mesh", asset)
 
+                # --- Physics settings ------------------------------------------------------
+
+                # Read UI state
+                enable_gravity = self.gravity_checkbox.isChecked()
+                enable_ccd = self.ccd_checkbox.isChecked()
+                generate_overlap = self.gen_overlap_checkbox.isChecked()
+
+                # Determine whether physics should be active
+                should_enable_physics = enable_gravity or enable_ccd or generate_overlap
+
+                # Apply settings
+                sm_obj.set_editor_property("simulate_physics", should_enable_physics)
+                sm_obj.set_editor_property("enable_gravity", enable_gravity)
+                sm_obj.set_editor_property("use_ccd", enable_ccd)
+                sm_obj.set_editor_property("generate_overlap_events", generate_overlap)
+
+                unreal.log(f"Physics {'ENABLED' if should_enable_physics else 'DISABLED'} for {bp_name}")
+                unreal.log(f"Gravity {'ENABLED' if enable_gravity else 'DISABLED'} | CCD {'ENABLED' if enable_ccd else 'DISABLED'} | Overlap {'ENABLED' if generate_overlap else 'DISABLED'}")
+
+
+
                 unreal.log(f"Assigned mesh '{asset.get_name()}' to component in {bp_name}")
 
                 # Save updated Blueprint
